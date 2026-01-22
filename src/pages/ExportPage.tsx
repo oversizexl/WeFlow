@@ -231,12 +231,12 @@ function ExportPage() {
         exportImages: options.exportMedia && options.exportImages,
         exportVoices: options.exportMedia && options.exportVoices,
         exportEmojis: options.exportMedia && options.exportEmojis,
-        exportVoiceAsText: options.exportVoiceAsText,  // ?????????exportMedia
+        exportVoiceAsText: options.exportVoiceAsText,  // 即使不导出媒体，也可以导出语音转文字内容
         excelCompactColumns: options.excelCompactColumns,
         sessionLayout,
         dateRange: options.useAllTime ? null : options.dateRange ? {
           start: Math.floor(options.dateRange.start.getTime() / 1000),
-          // ?????????????????????????????????23:59:59,??????????????????????????????
+          // 将结束日期设置为当天的 23:59:59，确保包含当天的所有记录
           end: Math.floor(new Date(options.dateRange.end.getFullYear(), options.dateRange.end.getMonth(), options.dateRange.end.getDate(), 23, 59, 59).getTime() / 1000)
         } : null
       }
@@ -249,10 +249,10 @@ function ExportPage() {
         )
         setExportResult(result)
       } else {
-        setExportResult({ success: false, error: `${options.format.toUpperCase()} ???????????????????????????...` })
+        setExportResult({ success: false, error: `${options.format.toUpperCase()} 格式目前暂未实现，请选择其他格式。` })
       }
     } catch (e) {
-      console.error('????????????:', e)
+      console.error('导出过程中发生异常:', e)
       setExportResult({ success: false, error: String(e) })
     } finally {
       setIsExporting(false)

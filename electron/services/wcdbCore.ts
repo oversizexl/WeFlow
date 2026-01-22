@@ -55,6 +55,7 @@ export class WcdbCore {
   private wcdbGetEmoticonCdnUrl: any = null
   private wcdbGetDbStatus: any = null
   private wcdbGetVoiceData: any = null
+  private wcdbGetSnsTimeline: any = null
   private avatarUrlCache: Map<string, { url?: string; updatedAt: number }> = new Map()
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
   private logTimer: NodeJS.Timeout | null = null
@@ -116,7 +117,8 @@ export class WcdbCore {
   private writeLog(message: string, force = false): void {
     if (!force && !this.isLogEnabled()) return
     const line = `[${new Date().toISOString()}] ${message}`
-    // 移除控制台日志，只写入文件
+    // 同时输出到控制台和文件
+    console.log('[WCDB]', message)
     try {
       const base = this.userDataPath || process.env.WCDB_LOG_DIR || process.cwd()
       const dir = join(base, 'logs')
@@ -385,6 +387,13 @@ export class WcdbCore {
         this.wcdbGetVoiceData = null
       }
 
+      // wcdb_status wcdb_get_sns_timeline(wcdb_handle handle, int32_t limit, int32_t offset, const char* username, const char* keyword, int32_t start_time, int32_t end_time, char** out_json)
+      try {
+        this.wcdbGetSnsTimeline = this.lib.func('int32 wcdb_get_sns_timeline(int64 handle, int32 limit, int32 offset, const char* username, const char* keyword, int32 startTime, int32 endTime, _Out_ void** outJson)')
+      } catch {
+        this.wcdbGetSnsTimeline = null
+      }
+
       // 初始化
       const initResult = this.wcdbInit()
       if (initResult !== 0) {
@@ -401,8 +410,8 @@ export class WcdbCore {
       this.writeLog(`WCDB 初始化异常: ${errorMsg}`, true)
       lastDllInitError = errorMsg
       // 检查是否是常见的 VC++ 运行时缺失错误
-      if (errorMsg.includes('126') || errorMsg.includes('找不到指定的模块') || 
-          errorMsg.includes('The specified module could not be found')) {
+      if (errorMsg.includes('126') || errorMsg.includes('找不到指定的模块') ||
+        errorMsg.includes('The specified module could not be found')) {
         lastDllInitError = '可能缺少 Visual C++ 运行时库。请安装 Microsoft Visual C++ Redistributable (x64)。'
       } else if (errorMsg.includes('193') || errorMsg.includes('不是有效的 Win32 应用程序')) {
         lastDllInitError = 'DLL 架构不匹配。请确保使用 64 位版本的应用程序。'
@@ -1384,6 +1393,34 @@ export class WcdbCore {
       const hex = this.decodeJsonPtr(outPtr[0])
       if (hex === null) return { success: false, error: '解析语音数据失败' }
       return { success: true, hex: hex || undefined }
+    } catch (e) {
+      return { success: false, error: String(e) }
+    }
+  }
+
+  async getSnsTimeline(limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: any[]; error?: string }> {
+    if (!this.ensureReady()) return { success: false, error: 'WCDB 未连接' }
+    if (!this.wcdbGetSnsTimeline) return { success: false, error: '当前 DLL 版本不支持获取朋友圈' }
+    try {
+      const outPtr = [null as any]
+      const usernamesJson = usernames && usernames.length > 0 ? JSON.stringify(usernames) : ''
+      const result = this.wcdbGetSnsTimeline(
+        this.handle,
+        limit,
+        offset,
+        usernamesJson,
+        keyword || '',
+        startTime || 0,
+        endTime || 0,
+        outPtr
+      )
+      if (result !== 0 || !outPtr[0]) {
+        return { success: false, error: `获取朋友圈失败: ${result}` }
+      }
+      const jsonStr = this.decodeJsonPtr(outPtr[0])
+      if (!jsonStr) return { success: false, error: '解析朋友圈数据失败' }
+      const timeline = JSON.parse(jsonStr)
+      return { success: true, timeline }
     } catch (e) {
       return { success: false, error: String(e) }
     }

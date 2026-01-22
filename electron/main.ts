@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, nativeTheme } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, session } from 'electron'
 import { Worker } from 'worker_threads'
 import { join, dirname } from 'path'
 import { autoUpdater } from 'electron-updater'
@@ -17,6 +17,7 @@ import { exportService, ExportOptions, ExportProgress } from './services/exportS
 import { KeyService } from './services/keyService'
 import { voiceTranscribeService } from './services/voiceTranscribeService'
 import { videoService } from './services/videoService'
+import { snsService } from './services/snsService'
 
 
 // 配置自动更新
@@ -614,8 +615,8 @@ function registerIpcHandlers() {
     return chatService.enrichSessionsContactInfo(usernames)
   })
 
-  ipcMain.handle('chat:getMessages', async (_, sessionId: string, offset?: number, limit?: number) => {
-    return chatService.getMessages(sessionId, offset, limit)
+  ipcMain.handle('chat:getMessages', async (_, sessionId: string, offset?: number, limit?: number, startTime?: number, endTime?: number, ascending?: boolean) => {
+    return chatService.getMessages(sessionId, offset, limit, startTime, endTime, ascending)
   })
 
   ipcMain.handle('chat:getLatestMessages', async (_, sessionId: string, limit?: number) => {
@@ -670,6 +671,10 @@ function registerIpcHandlers() {
 
   ipcMain.handle('chat:getMessageById', async (_, sessionId: string, localId: number) => {
     return chatService.getMessageById(sessionId, localId)
+  })
+
+  ipcMain.handle('sns:getTimeline', async (_, limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number) => {
+    return snsService.getTimeline(limit, offset, usernames, keyword, startTime, endTime)
   })
 
   // 私聊克隆
@@ -976,6 +981,17 @@ app.whenReady().then(() => {
   if (!onboardingDone) {
     createOnboardingWindow()
   }
+
+  // 解决朋友圈图片无法加载问题（添加 Referer）
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    {
+      urls: ['*://*.qpic.cn/*', '*://*.wx.qq.com/*']
+    },
+    (details, callback) => {
+      details.requestHeaders['Referer'] = 'https://wx.qq.com/'
+      callback({ requestHeaders: details.requestHeaders })
+    }
+  )
 
   // 启动时检测更新
   checkForUpdatesOnStartup()

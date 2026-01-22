@@ -74,7 +74,7 @@ const emojiDownloading: Map<string, Promise<string | null>> = new Map()
 class ChatService {
   private configService: ConfigService
   private connected = false
-  private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number }> = new Map()
+  private messageCursors: Map<string, { cursor: number; fetched: number; batchSize: number; startTime?: number; endTime?: number; ascending?: boolean }> = new Map()
   private readonly messageBatchDefault = 50
   private avatarCache: Map<string, ContactCacheEntry>
   private readonly avatarCacheTtlMs = 10 * 60 * 1000
@@ -430,9 +430,9 @@ class ChatService {
       }
 
       if (!headImageDbPath) {
-        console.log('[头像加载] 未找到 head_image.db', { 
-          accountDir, 
-          checkedPaths: headImageDbPaths 
+        console.log('[头像加载] 未找到 head_image.db', {
+          accountDir,
+          checkedPaths: headImageDbPaths
         })
         return result
       }
@@ -444,7 +444,7 @@ class ChatService {
 
       try {
         const stmt = db.prepare('SELECT username, image_buffer FROM head_image WHERE username = ?')
-        
+
         for (const username of usernames) {
           try {
             const row = stmt.get(username) as any
@@ -454,9 +454,9 @@ class ChatService {
               result[username] = `data:image/jpeg;base64,${base64}`
             } else {
               // 只输出没有找到头像的
-              console.log(`[头像加载] 未找到头像: ${username}`, { 
-                hasRow: !!row, 
-                hasBuffer: row ? !!row.image_buffer : false 
+              console.log(`[头像加载] 未找到头像: ${username}`, {
+                hasRow: !!row,
+                hasBuffer: row ? !!row.image_buffer : false
               })
             }
           } catch (e) {
@@ -501,7 +501,10 @@ class ChatService {
   async getMessages(
     sessionId: string,
     offset: number = 0,
-    limit: number = 50
+    limit: number = 50,
+    startTime: number = 0,
+    endTime: number = 0,
+    ascending: boolean = false
   ): Promise<{ success: boolean; messages?: Message[]; hasMore?: boolean; error?: string }> {
     try {
       const connectResult = await this.ensureConnected()
@@ -516,7 +519,14 @@ class ChatService {
       // 1. 没有游标状态
       // 2. offset 为 0 (重新加载会话)
       // 3. batchSize 改变
-      const needNewCursor = !state || offset === 0 || state.batchSize !== batchSize
+      // 4. startTime 改变
+      // 5. ascending 改变
+      const needNewCursor = !state ||
+        offset === 0 ||
+        state.batchSize !== batchSize ||
+        state.startTime !== startTime ||
+        state.endTime !== endTime ||
+        state.ascending !== ascending
 
       if (needNewCursor) {
         // 关闭旧游标
@@ -529,13 +539,16 @@ class ChatService {
         }
 
         // 创建新游标
-        const cursorResult = await wcdbService.openMessageCursor(sessionId, batchSize, false, 0, 0)
+        // 注意：WeFlow 数据库中的 create_time 是以秒为单位的
+        const beginTimestamp = startTime > 10000000000 ? Math.floor(startTime / 1000) : startTime
+        const endTimestamp = endTime > 10000000000 ? Math.floor(endTime / 1000) : endTime
+        const cursorResult = await wcdbService.openMessageCursor(sessionId, batchSize, ascending, beginTimestamp, endTimestamp)
         if (!cursorResult.success || !cursorResult.cursor) {
           console.error('[ChatService] 打开消息游标失败:', cursorResult.error)
           return { success: false, error: cursorResult.error || '打开消息游标失败' }
         }
 
-        state = { cursor: cursorResult.cursor, fetched: 0, batchSize }
+        state = { cursor: cursorResult.cursor, fetched: 0, batchSize, startTime, endTime, ascending }
         this.messageCursors.set(sessionId, state)
 
         // 如果需要跳过消息(offset > 0),逐批获取但不返回

@@ -362,6 +362,13 @@ export class WcdbService {
     return this.callWorker('getVoiceData', { sessionId, createTime, candidates, localId, svrId })
   }
 
+  /**
+   * 获取朋友圈
+   */
+  async getSnsTimeline(limit: number, offset: number, usernames?: string[], keyword?: string, startTime?: number, endTime?: number): Promise<{ success: boolean; timeline?: any[]; error?: string }> {
+    return this.callWorker('getSnsTimeline', { limit, offset, usernames, keyword, startTime, endTime })
+  }
+
 }
 
 export const wcdbService = new WcdbService()
