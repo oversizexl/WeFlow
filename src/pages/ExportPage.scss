@@ -242,8 +242,8 @@
 
 .content-card-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(150px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: 8px;
   flex-shrink: 0;
 }
 
@@ -251,16 +251,16 @@
   border: 1px solid var(--border-color);
   border-radius: 12px;
   background: var(--card-bg);
-  padding: 12px;
+  padding: 10px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 
   .card-title {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 14px;
+    gap: 5px;
+    font-size: 13px;
     color: var(--text-primary);
     font-weight: 600;
   }
@@ -268,18 +268,18 @@
   .card-stats {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 4px;
+    gap: 3px;
 
     .stat-item {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      font-size: 12px;
+      font-size: 11px;
       color: var(--text-secondary);
 
       strong {
         color: var(--text-primary);
-        font-size: 14px;
+        font-size: 13px;
       }
     }
   }
@@ -287,12 +287,12 @@
   .card-export-btn {
     margin-top: auto;
     border: none;
-    border-radius: 8px;
-    padding: 8px 10px;
+    border-radius: 7px;
+    padding: 7px 9px;
     background: var(--primary);
     color: #fff;
     cursor: pointer;
-    font-size: 13px;
+    font-size: 12px;
     font-weight: 600;
 
     &:hover {
@@ -1658,10 +1658,6 @@
       min-height: auto;
       padding: 8px 10px;
     }
-  }
-
-  .content-card-grid {
-    grid-template-columns: repeat(2, minmax(160px, 1fr));
   }
 
   .format-grid {
