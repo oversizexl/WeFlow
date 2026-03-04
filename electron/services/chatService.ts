@@ -232,7 +232,9 @@ class ChatService {
   }>()
   // 缓存会话表信息，避免每次查询
   private sessionTablesCache = new Map<string, Array<{ tableName: string; dbPath: string }>>()
+  private messageTableColumnsCache = new Map<string, { columns: Set<string>; updatedAt: number }>()
   private readonly sessionTablesCacheTtl = 300000 // 5分钟
+  private readonly messageTableColumnsCacheTtlMs = 30 * 60 * 1000
   private sessionMessageCountCache = new Map<string, { count: number; updatedAt: number }>()
   private sessionMessageCountHintCache = new Map<string, number>()
   private sessionMessageCountBatchCache: {
@@ -2033,6 +2035,7 @@ class ChatService {
     this.sessionDetailFastCache.clear()
     this.sessionDetailExtraCache.clear()
     this.sessionStatusCache.clear()
+    this.messageTableColumnsCache.clear()
     this.refreshSessionStatsCacheScope(scope)
     this.refreshGroupMyMessageCountCacheScope(scope)
   }
@@ -2302,6 +2305,13 @@ class ChatService {
   }
 
   private async getMessageTableColumns(dbPath: string, tableName: string): Promise<Set<string>> {
+    const cacheKey = `${dbPath}\u0001${tableName}`
+    const now = Date.now()
+    const cached = this.messageTableColumnsCache.get(cacheKey)
+    if (cached && now - cached.updatedAt <= this.messageTableColumnsCacheTtlMs) {
+      return new Set<string>(cached.columns)
+    }
+
     const pragmaSql = `PRAGMA table_info(${this.quoteSqlIdentifier(tableName)})`
     const result = await wcdbService.execQuery('message', dbPath, pragmaSql)
     if (!result.success || !result.rows || result.rows.length === 0) {
@@ -2312,6 +2322,10 @@ class ChatService {
       const name = String(this.getRowField(row, ['name', 'column_name', 'columnName']) || '').trim().toLowerCase()
       if (name) columns.add(name)
     }
+    this.messageTableColumnsCache.set(cacheKey, {
+      columns: new Set<string>(columns),
+      updatedAt: now
+    })
     return columns
   }
 
@@ -5007,25 +5021,6 @@ class ChatService {
     }
   }
 
-  private async getBoundaryMessageTime(sessionId: string, ascending: boolean): Promise<number | undefined> {
-    const cursorResult = await wcdbService.openMessageCursor(sessionId, 1, ascending, 0, 0)
-    if (!cursorResult.success || !cursorResult.cursor) {
-      return undefined
-    }
-
-    const cursor = cursorResult.cursor
-    try {
-      const batch = await wcdbService.fetchMessageBatch(cursor)
-      if (!batch.success || !batch.rows || batch.rows.length === 0) {
-        return undefined
-      }
-      const ts = parseInt(batch.rows[0].create_time || '0', 10)
-      return Number.isFinite(ts) && ts > 0 ? ts : undefined
-    } finally {
-      await wcdbService.closeMessageCursor(cursor)
-    }
-  }
-
   async getSessionDetailExtra(sessionId: string): Promise<{
     success: boolean
     detail?: SessionDetailExtra
@@ -5049,17 +5044,29 @@ class ChatService {
         return { success: true, detail: cachedDetail.detail }
       }
 
-      const [firstMessageTimeResult, latestMessageTimeResult, tableStatsResult] = await Promise.allSettled([
-        this.getBoundaryMessageTime(normalizedSessionId, true),
-        this.getBoundaryMessageTime(normalizedSessionId, false),
-        wcdbService.getMessageTableStats(normalizedSessionId)
+      const [tableStatsResult, statsResult] = await Promise.allSettled([
+        wcdbService.getMessageTableStats(normalizedSessionId),
+        (async (): Promise<ExportSessionStats | null> => {
+          const cachedStats = this.getSessionStatsCacheEntry(normalizedSessionId)
+          if (cachedStats && this.supportsRequestedRelation(cachedStats.entry, false)) {
+            return this.fromSessionStatsCacheStats(cachedStats.entry.stats)
+          }
+          const myWxid = this.configService.get('myWxid') || ''
+          const selfIdentitySet = new Set<string>(this.buildIdentityKeys(myWxid))
+          const stats = await this.getOrComputeSessionExportStats(normalizedSessionId, false, selfIdentitySet)
+          this.setSessionStatsCacheEntry(normalizedSessionId, stats, false)
+          return stats
+        })()
       ])
 
-      const firstMessageTime = firstMessageTimeResult.status === 'fulfilled'
-        ? firstMessageTimeResult.value
+      const statsSnapshot = statsResult.status === 'fulfilled'
+        ? statsResult.value
+        : null
+      const firstMessageTime = statsSnapshot && Number.isFinite(statsSnapshot.firstTimestamp)
+        ? Math.max(0, Math.floor(statsSnapshot.firstTimestamp as number))
         : undefined
-      const latestMessageTime = latestMessageTimeResult.status === 'fulfilled'
-        ? latestMessageTimeResult.value
+      const latestMessageTime = statsSnapshot && Number.isFinite(statsSnapshot.lastTimestamp)
+        ? Math.max(0, Math.floor(statsSnapshot.lastTimestamp as number))
         : undefined
 
       const messageTables: { dbName: string; tableName: string; count: number }[] = []
@@ -5239,15 +5246,10 @@ class ChatService {
         const myWxid = this.configService.get('myWxid') || ''
         const selfIdentitySet = new Set<string>(this.buildIdentityKeys(myWxid))
         let usedBatchedCompute = false
-        try {
-          const batchedStatsMap = await this.computeSessionExportStatsBatch(
-            pendingSessionIds,
-            includeRelations,
-            selfIdentitySet
-          )
-          for (const sessionId of pendingSessionIds) {
-            const stats = batchedStatsMap[sessionId]
-            if (!stats) continue
+        if (pendingSessionIds.length === 1) {
+          const sessionId = pendingSessionIds[0]
+          try {
+            const stats = await this.getOrComputeSessionExportStats(sessionId, includeRelations, selfIdentitySet)
             resultMap[sessionId] = stats
             const updatedAt = this.setSessionStatsCacheEntry(sessionId, stats, includeRelations)
             cacheMeta[sessionId] = {
@@ -5256,10 +5258,33 @@ class ChatService {
               includeRelations,
               source: 'fresh'
             }
+            usedBatchedCompute = true
+          } catch {
+            usedBatchedCompute = false
           }
-          usedBatchedCompute = true
-        } catch {
-          usedBatchedCompute = false
+        } else {
+          try {
+            const batchedStatsMap = await this.computeSessionExportStatsBatch(
+              pendingSessionIds,
+              includeRelations,
+              selfIdentitySet
+            )
+            for (const sessionId of pendingSessionIds) {
+              const stats = batchedStatsMap[sessionId]
+              if (!stats) continue
+              resultMap[sessionId] = stats
+              const updatedAt = this.setSessionStatsCacheEntry(sessionId, stats, includeRelations)
+              cacheMeta[sessionId] = {
+                updatedAt,
+                stale: false,
+                includeRelations,
+                source: 'fresh'
+              }
+            }
+            usedBatchedCompute = true
+          } catch {
+            usedBatchedCompute = false
+          }
         }
 
         if (!usedBatchedCompute) {
