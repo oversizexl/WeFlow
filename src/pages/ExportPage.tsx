@@ -2053,24 +2053,6 @@ function ExportPage() {
     }
   }, [sessions, preselectSessionIds])
 
-  const visibleSessions = useMemo(() => {
-    const keyword = searchKeyword.trim().toLowerCase()
-    return sessions
-      .filter((session) => {
-        if (session.kind !== activeTab) return false
-        if (!keyword) return true
-        return (
-          (session.displayName || '').toLowerCase().includes(keyword) ||
-          session.username.toLowerCase().includes(keyword)
-        )
-      })
-      .sort((a, b) => {
-        const latestA = a.sortTimestamp || a.lastTimestamp || 0
-        const latestB = b.sortTimestamp || b.lastTimestamp || 0
-        return latestB - latestA
-      })
-  }, [sessions, activeTab, searchKeyword])
-
   const selectedCount = selectedSessions.size
 
   const toggleSelectSession = (sessionId: string) => {
@@ -2088,7 +2070,9 @@ function ExportPage() {
   }
 
   const toggleSelectAllVisible = () => {
-    const visibleIds = visibleSessions.filter(session => session.hasSession).map(session => session.username)
+    const visibleIds = filteredContacts
+      .filter(contact => sessionRowByUsername.get(contact.username)?.hasSession)
+      .map(contact => contact.username)
     if (visibleIds.length === 0) return
 
     setSelectedSessions(prev => {
@@ -3461,13 +3445,23 @@ function ExportPage() {
   }
 
   const visibleSelectedCount = useMemo(() => {
-    const visibleSet = new Set(visibleSessions.map(session => session.username))
+    const visibleSet = new Set(
+      filteredContacts
+        .filter(contact => sessionRowByUsername.get(contact.username)?.hasSession)
+        .map(contact => contact.username)
+    )
     let count = 0
     for (const id of selectedSessions) {
       if (visibleSet.has(id)) count += 1
     }
     return count
-  }, [visibleSessions, selectedSessions])
+  }, [filteredContacts, selectedSessions, sessionRowByUsername])
+  const visibleSelectableCount = useMemo(() => (
+    filteredContacts.reduce((count, contact) => (
+      sessionRowByUsername.get(contact.username)?.hasSession ? count + 1 : count
+    ), 0)
+  ), [filteredContacts, sessionRowByUsername])
+  const isAllVisibleSelected = visibleSelectableCount > 0 && visibleSelectedCount === visibleSelectableCount
 
   const canCreateTask = exportDialog.scope === 'sns'
     ? Boolean(exportFolder)
@@ -3522,6 +3516,7 @@ function ExportPage() {
     filteredContacts.map((contact) => {
       const matchedSession = sessionRowByUsername.get(contact.username)
       const canExport = Boolean(matchedSession?.hasSession)
+      const checked = canExport && selectedSessions.has(contact.username)
       const isRunning = canExport && runningSessionIds.has(contact.username)
       const isQueued = canExport && queuedSessionIds.has(contact.username)
       const recent = canExport ? formatRecentExportTime(lastExportBySession[contact.username], nowTick) : ''
@@ -3536,9 +3531,20 @@ function ExportPage() {
       return (
         <div
           key={contact.username}
-          className="contact-row"
+          className={`contact-row ${checked ? 'selected' : ''}`}
         >
           <div className="contact-item">
+            <div className="row-select-cell">
+              <button
+                className={`select-icon-btn ${checked ? 'checked' : ''}`}
+                type="button"
+                disabled={!canExport}
+                onClick={() => toggleSelectSession(contact.username)}
+                title={canExport ? (checked ? '取消选择' : '选择会话') : '该联系人暂无会话记录'}
+              >
+                {checked ? <CheckSquare size={16} /> : <Square size={16} />}
+              </button>
+            </div>
             <div className="contact-avatar">
               {contact.avatarUrl ? (
                 <img src={contact.avatarUrl} alt="" loading="lazy" />
@@ -3611,10 +3617,12 @@ function ExportPage() {
     openSingleExport,
     queuedSessionIds,
     runningSessionIds,
+    selectedSessions,
     sessionDetail?.wxid,
     sessionMessageCounts,
     sessionRowByUsername,
-    showSessionDetailPanel
+    showSessionDetailPanel,
+    toggleSelectSession
   ])
   const chooseExportFolder = useCallback(async () => {
     const result = await window.electronAPI.dialog.openFile({
@@ -3868,7 +3876,47 @@ function ExportPage() {
               </div>
             ) : (
               <>
+                <div className="contacts-selection-toolbar">
+                  <button
+                    className={`select-icon-btn ${isAllVisibleSelected ? 'checked' : ''}`}
+                    type="button"
+                    onClick={toggleSelectAllVisible}
+                    disabled={visibleSelectableCount === 0}
+                    title={isAllVisibleSelected ? '取消全选当前筛选联系人' : '全选当前筛选联系人'}
+                  >
+                    {isAllVisibleSelected ? <CheckSquare size={16} /> : <Square size={16} />}
+                  </button>
+                  <button
+                    className="selection-toggle-btn"
+                    type="button"
+                    onClick={toggleSelectAllVisible}
+                    disabled={visibleSelectableCount === 0}
+                  >
+                    {isAllVisibleSelected ? '取消全选当前筛选' : '全选当前筛选'}
+                  </button>
+                  <span className="selection-summary">已选 {selectedCount} 项</span>
+                  <span className="selection-summary muted">
+                    当前筛选 {visibleSelectedCount}/{visibleSelectableCount}
+                  </span>
+                  <button
+                    className="selection-clear-btn"
+                    type="button"
+                    onClick={clearSelection}
+                    disabled={selectedCount === 0}
+                  >
+                    清空
+                  </button>
+                  <button
+                    className="selection-export-btn"
+                    type="button"
+                    onClick={openBatchExport}
+                    disabled={selectedCount === 0}
+                  >
+                    批量导出
+                  </button>
+                </div>
                 <div className="contacts-list-header">
+                  <span className="contacts-list-header-select">选择</span>
                   <span className="contacts-list-header-main">联系人（头像/名称/微信号）</span>
                   <span className="contacts-list-header-count">总消息数</span>
                   <span className="contacts-list-header-actions">操作</span>
