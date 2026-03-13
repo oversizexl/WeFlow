@@ -2018,7 +2018,6 @@ function registerIpcHandlers() {
           dbPath,
           decryptKey,
           wxid,
-          nativeTimeoutMs: 5000,
           onProgress: (progress) => {
             if (isYearsLoadCanceled(taskId)) return
             const snapshot = updateTaskSnapshot({
