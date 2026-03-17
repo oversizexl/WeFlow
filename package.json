@@ -89,6 +89,18 @@
       ],
       "icon": "public/icon.ico"
     },
+    "linux": {
+      "icon": "public/icon.png",
+      "target": [
+        "AppImage",
+        "pacman",
+        "deb",
+        "tar.gz"
+      ],
+      "category": "Utility",
+      "executableName": "weflow",
+      "synopsis": "WeFlow for Linux"
+    },
     "nsis": {
       "oneClick": false,
       "differentialPackage": false,
