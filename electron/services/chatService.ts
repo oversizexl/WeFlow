@@ -6,7 +6,7 @@ import * as https from 'https'
 import * as http from 'http'
 import * as fzstd from 'fzstd'
 import * as crypto from 'crypto'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { ConfigService } from './config'
 import { wcdbService } from './wcdbService'
 import { MessageCacheService } from './messageCacheService'
@@ -292,6 +292,7 @@ class ChatService {
   private readonly allGroupSessionIdsCacheTtlMs = 5 * 60 * 1000
   private groupMyMessageCountCacheScope = ''
   private groupMyMessageCountMemoryCache = new Map<string, GroupMyMessageCountCacheEntry>()
+  private initFailureDialogShown = false
 
   constructor() {
     this.configService = new ConfigService()
@@ -338,6 +339,55 @@ class ChatService {
     return true
   }
 
+  private extractErrorCode(message?: string): number | null {
+    const text = String(message || '').trim()
+    if (!text) return null
+    const match = text.match(/(?:错误码\s*[:：]\s*|\()(-?\d{2,6})(?:\)|\b)/)
+    if (!match) return null
+    const parsed = Number(match[1])
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  private toCodeOnlyMessage(rawMessage?: string, fallbackCode = -3999): string {
+    const code = this.extractErrorCode(rawMessage) ?? fallbackCode
+    return `错误码: ${code}`
+  }
+
+  private async maybeShowInitFailureDialog(errorMessage: string): Promise<void> {
+    if (!app.isPackaged) return
+    if (this.initFailureDialogShown) return
+
+    const code = this.extractErrorCode(errorMessage)
+    if (code === null) return
+    const isSecurityCode =
+      code === -101 ||
+      code === -102 ||
+      code === -2299 ||
+      code === -2301 ||
+      code === -2302 ||
+      code === -1006 ||
+      (code <= -2201 && code >= -2212)
+    if (!isSecurityCode) return
+
+    this.initFailureDialogShown = true
+    const detail = [
+      `错误码: ${code}`
+    ].join('\n')
+
+    try {
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'WeFlow 启动失败',
+        message: '启动失败，请反馈错误码。',
+        detail,
+        buttons: ['确定'],
+        noLink: true
+      })
+    } catch {
+      // 弹窗失败不阻断主流程
+    }
+  }
+
   /**
    * 连接数据库
    */
@@ -362,7 +412,9 @@ class ChatService {
       const cleanedWxid = this.cleanAccountDirName(wxid)
       const openOk = await wcdbService.open(dbPath, decryptKey, cleanedWxid)
       if (!openOk) {
-        return { success: false, error: 'WCDB 打开失败，请检查路径和密钥' }
+        const detailedError = this.toCodeOnlyMessage(await wcdbService.getLastInitError())
+        await this.maybeShowInitFailureDialog(detailedError)
+        return { success: false, error: detailedError }
       }
 
       this.connected = true
@@ -376,7 +428,7 @@ class ChatService {
       return { success: true }
     } catch (e) {
       console.error('ChatService: 连接数据库失败:', e)
-      return { success: false, error: String(e) }
+      return { success: false, error: this.toCodeOnlyMessage(String(e), -3998) }
     }
   }
 

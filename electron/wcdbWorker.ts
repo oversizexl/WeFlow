@@ -37,6 +37,9 @@ if (parentPort) {
                 case 'open':
                     result = await core.open(payload.dbPath, payload.hexKey, payload.wxid)
                     break
+                case 'getLastInitError':
+                    result = core.getLastInitError()
+                    break
                 case 'close':
                     core.close()
                     result = { success: true }

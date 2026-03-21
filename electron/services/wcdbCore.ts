@@ -126,6 +126,10 @@ export class WcdbCore {
     this.writeLog(`[bootstrap] setPaths resourcesPath=${resourcesPath} userDataPath=${userDataPath}`, true)
   }
 
+  getLastInitError(): string | null {
+    return lastDllInitError
+  }
+
   setLogEnabled(enabled: boolean): void {
     this.logEnabled = enabled
     this.writeLog(`[bootstrap] setLogEnabled=${enabled ? '1' : '0'} env.WCDB_LOG_ENABLED=${process.env.WCDB_LOG_ENABLED || ''}`, true)
@@ -300,23 +304,7 @@ export class WcdbCore {
   }
 
   private formatInitProtectionError(code: number): string {
-    switch (code) {
-      case -101: return '安全校验失败：授权已过期（-101）'
-      case -102: return '安全校验失败：关键环境文件缺失（-102）'
-      case -2201: return '安全校验失败：未找到签名清单（-2201）'
-      case -2202: return '安全校验失败：缺少签名文件（-2202）'
-      case -2203: return '安全校验失败：读取签名清单失败（-2203）'
-      case -2204: return '安全校验失败：读取签名文件失败（-2204）'
-      case -2205: return '安全校验失败：签名内容格式无效（-2205）'
-      case -2206: return '安全校验失败：签名清单解析失败（-2206）'
-      case -2207: return '安全校验失败：清单平台与当前平台不匹配（-2207）'
-      case -2208: return '安全校验失败：目标文件哈希读取失败（-2208）'
-      case -2209: return '安全校验失败：目标文件哈希不匹配（-2209）'
-      case -2210: return '安全校验失败：签名无效（-2210）'
-      case -2211: return '安全校验失败：主程序 EXE 哈希不匹配（-2211）'
-      case -2212: return '安全校验失败：wcdb_api 模块哈希不匹配（-2212）'
-      default: return `安全校验失败（错误码: ${code}）`
-    }
+    return `错误码: ${code}`
   }
 
   private isLogEnabled(): boolean {
@@ -640,7 +628,9 @@ export class WcdbCore {
         }
       }
 
+      this.writeLog(`[bootstrap] koffi.load begin path=${dllPath}`, true)
       this.lib = this.koffi.load(dllPath)
+      this.writeLog('[bootstrap] koffi.load ok', true)
 
       // InitProtection (Added for security)
       try {
@@ -666,6 +656,7 @@ export class WcdbCore {
         }
         for (const resPath of resourcePaths) {
           try {
+            this.writeLog(`[bootstrap] InitProtection call path=${resPath}`, true)
             protectionCode = Number(this.wcdbInitProtection(resPath))
             if (protectionCode === 0) {
               protectionOk = true
@@ -687,7 +678,7 @@ export class WcdbCore {
           return false
         }
       } catch (e) {
-        lastDllInitError = `InitProtection symbol not found: ${String(e)}`
+        lastDllInitError = this.formatInitProtectionError(-2301)
         this.writeLog(`[bootstrap] InitProtection symbol load failed: ${String(e)}`, true)
         return false
       }
@@ -1107,7 +1098,7 @@ export class WcdbCore {
       const initResult = this.wcdbInit()
       if (initResult !== 0) {
         console.error('WCDB 初始化失败:', initResult)
-        lastDllInitError = `初始化失败（错误码: ${initResult}）`
+        lastDllInitError = this.formatInitProtectionError(initResult)
         return false
       }
 
@@ -1118,14 +1109,7 @@ export class WcdbCore {
       const errorMsg = e instanceof Error ? e.message : String(e)
       console.error('WCDB 初始化异常:', errorMsg)
       this.writeLog(`WCDB 初始化异常: ${errorMsg}`, true)
-      lastDllInitError = errorMsg
-      // 检查是否是常见的 VC++ 运行时缺失错误
-      if (errorMsg.includes('126') || errorMsg.includes('找不到指定的模块') ||
-        errorMsg.includes('The specified module could not be found')) {
-        lastDllInitError = '可能缺少 Visual C++ 运行时库。请安装 Microsoft Visual C++ Redistributable (x64)。'
-      } else if (errorMsg.includes('193') || errorMsg.includes('不是有效的 Win32 应用程序')) {
-        lastDllInitError = 'DLL 架构不匹配。请确保使用 64 位版本的应用程序。'
-      }
+      lastDllInitError = this.formatInitProtectionError(-2302)
       return false
     }
   }
@@ -1152,8 +1136,7 @@ export class WcdbCore {
       if (!this.initialized) {
         const initOk = await this.initialize()
         if (!initOk) {
-          // 返回更详细的错误信息，帮助用户诊断问题
-          const detailedError = lastDllInitError || 'WCDB 初始化失败'
+          const detailedError = lastDllInitError || this.formatInitProtectionError(-2303)
           return { success: false, error: detailedError }
         }
       }
@@ -1163,7 +1146,7 @@ export class WcdbCore {
       this.writeLog(`testConnection dbPath=${dbPath} wxid=${wxid} dbStorage=${dbStoragePath || 'null'}`)
 
       if (!dbStoragePath || !existsSync(dbStoragePath)) {
-        return { success: false, error: `数据库目录不存在: ${dbPath}` }
+        return { success: false, error: this.formatInitProtectionError(-3001) }
       }
 
       // 递归查找 session.db
@@ -1171,7 +1154,7 @@ export class WcdbCore {
       this.writeLog(`testConnection sessionDb=${sessionDbPath || 'null'}`)
 
       if (!sessionDbPath) {
-        return { success: false, error: `未找到 session.db 文件` }
+        return { success: false, error: this.formatInitProtectionError(-3002) }
       }
 
       // 分配输出参数内存
@@ -1180,17 +1163,13 @@ export class WcdbCore {
 
       if (result !== 0) {
         await this.printLogs()
-        let errorMsg = '数据库打开失败'
-        if (result === -1) errorMsg = '参数错误'
-        else if (result === -2) errorMsg = '密钥错误'
-        else if (result === -3) errorMsg = '数据库打开失败'
         this.writeLog(`testConnection openAccount failed code=${result}`)
-        return { success: false, error: `${errorMsg} (错误码: ${result})` }
+        return { success: false, error: this.formatInitProtectionError(result) }
       }
 
       const tempHandle = handleOut[0]
       if (tempHandle <= 0) {
-        return { success: false, error: '无效的数据库句柄' }
+        return { success: false, error: this.formatInitProtectionError(-3003) }
       }
 
       // 测试成功：使用 shutdown 清理资源（包括测试句柄）
@@ -1219,7 +1198,7 @@ export class WcdbCore {
     } catch (e) {
       console.error('测试连接异常:', e)
       this.writeLog(`testConnection exception: ${String(e)}`)
-      return { success: false, error: String(e) }
+      return { success: false, error: this.formatInitProtectionError(-3004) }
     }
   }
 
@@ -1411,6 +1390,7 @@ export class WcdbCore {
    */
   async open(dbPath: string, hexKey: string, wxid: string): Promise<boolean> {
     try {
+      lastDllInitError = null
       if (!this.initialized) {
         const initOk = await this.initialize()
         if (!initOk) return false
@@ -1438,6 +1418,7 @@ export class WcdbCore {
       if (!dbStoragePath || !existsSync(dbStoragePath)) {
         console.error('数据库目录不存在:', dbPath)
         this.writeLog(`open failed: dbStorage not found for ${dbPath}`)
+        lastDllInitError = this.formatInitProtectionError(-3001)
         return false
       }
 
@@ -1446,6 +1427,7 @@ export class WcdbCore {
       if (!sessionDbPath) {
         console.error('未找到 session.db 文件')
         this.writeLog('open failed: session.db not found')
+        lastDllInitError = this.formatInitProtectionError(-3002)
         return false
       }
 
@@ -1456,11 +1438,13 @@ export class WcdbCore {
         console.error('打开数据库失败:', result)
         await this.printLogs()
         this.writeLog(`open failed: openAccount code=${result}`)
+        lastDllInitError = this.formatInitProtectionError(result)
         return false
       }
 
       const handle = handleOut[0]
       if (handle <= 0) {
+        lastDllInitError = this.formatInitProtectionError(-3003)
         return false
       }
 
@@ -1470,6 +1454,7 @@ export class WcdbCore {
       this.currentWxid = wxid
       this.currentDbStoragePath = dbStoragePath
       this.initialized = true
+      lastDllInitError = null
       if (this.wcdbSetMyWxid && wxid) {
         try {
           this.wcdbSetMyWxid(this.handle, wxid)
@@ -1487,6 +1472,7 @@ export class WcdbCore {
     } catch (e) {
       console.error('打开数据库异常:', e)
       this.writeLog(`open exception: ${String(e)}`)
+      lastDllInitError = this.formatInitProtectionError(-3004)
       return false
     }
   }

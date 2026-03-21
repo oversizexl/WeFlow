@@ -164,6 +164,10 @@ export class WcdbService {
     return this.callWorker('open', { dbPath, hexKey, wxid })
   }
 
+  async getLastInitError(): Promise<string | null> {
+    return this.callWorker('getLastInitError')
+  }
+
   /**
    * 关闭数据库连接
    */
