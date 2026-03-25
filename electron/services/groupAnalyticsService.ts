@@ -776,7 +776,12 @@ class GroupAnalyticsService {
     return normalized > 10000000000 ? Math.floor(normalized / 1000) : normalized
   }
 
-  private extractRowSenderUsername(row: Record<string, any>): string {
+  private extractRowSenderUsername(row: Record<string, any>, myWxid?: string): string {
+    const isSendRaw = row.computed_is_send ?? row.is_send ?? row.isSend ?? row.WCDB_CT_is_send
+    if (isSendRaw != null && parseInt(isSendRaw, 10) === 1 && myWxid) {
+      return myWxid
+    }
+
     const candidates = [
       row.sender_username,
       row.senderUsername,
@@ -880,7 +885,7 @@ class GroupAnalyticsService {
         if (rows.length === 0) break
 
         for (const row of rows) {
-          const senderFromRow = this.extractRowSenderUsername(row)
+          const senderFromRow = this.extractRowSenderUsername(row, String(this.configService.get('myWxid') || '').trim())
           if (senderFromRow && !matchesTargetSender(senderFromRow)) {
             continue
           }
@@ -986,7 +991,7 @@ class GroupAnalyticsService {
             const row = rows[index]
             consumedRows += 1
 
-            const senderFromRow = this.extractRowSenderUsername(row)
+            const senderFromRow = this.extractRowSenderUsername(row, String(this.configService.get('myWxid') || '').trim())
             if (senderFromRow && !matchesTargetSender(senderFromRow)) {
               continue
             }
@@ -1531,7 +1536,7 @@ class GroupAnalyticsService {
           if (rows.length === 0) break
 
           for (const row of rows) {
-            let senderFromRow = this.extractRowSenderUsername(row)
+            let senderFromRow = this.extractRowSenderUsername(row, myWxid)
             
             const isSendRaw = row.computed_is_send ?? row.is_send ?? row.isSend ?? row.WCDB_CT_is_send
             const isSend = isSendRaw != null ? parseInt(isSendRaw, 10) === 1 : false
