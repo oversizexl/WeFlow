@@ -36,6 +36,10 @@ import { messagePushService } from './services/messagePushService'
 autoUpdater.autoDownload = false
 autoUpdater.autoInstallOnAppQuit = true
 autoUpdater.disableDifferentialDownload = true  // 禁用差分更新，强制全量下载
+// Windows x64 与 arm64 使用不同更新通道，避免 latest.yml 互相覆盖导致下错架构安装包。
+if (process.platform === 'win32' && process.arch === 'arm64') {
+  autoUpdater.channel = 'latest-arm64'
+}
 const AUTO_UPDATE_ENABLED =
   process.env.AUTO_UPDATE_ENABLED === 'true' ||
   process.env.AUTO_UPDATE_ENABLED === '1' ||
@@ -142,33 +146,47 @@ const normalizeReleaseNotes = (rawReleaseNotes: unknown): string => {
 
   if (!merged.trim()) return ''
 
+  const shouldStripReleaseSection = (headingRaw: string): boolean => {
+    const heading = headingRaw.trim().toLowerCase()
+    if (heading === '下载' || heading === 'download') return true
+
+    const compactHeading = heading.replace(/\s+/g, '')
+    if (compactHeading.startsWith('macos安装提示')) return true
+    if (compactHeading.startsWith('mac安装提示')) return true
+    return false
+  }
+
   // 兼容 electron-updater 直接返回 HTML 的场景
   const removeDownloadSectionFromHtml = (input: string): string => {
-    return input.replace(
-      /<h[1-6][^>]*>\s*(?:下载|download)\s*<\/h[1-6]>\s*[\s\S]*?(?=<h[1-6]\b|$)/gi,
-      ''
-    )
+    return input
+      .replace(
+        /<h[1-6][^>]*>\s*(?:下载|download)\s*<\/h[1-6]>\s*[\s\S]*?(?=<h[1-6]\b|$)/gi,
+        ''
+      )
+      .replace(
+        /<h[1-6][^>]*>\s*(?:mac\s*os|mac)\s*安装提示(?:\s*[（(]\s*未知来源\s*[）)])?\s*<\/h[1-6]>\s*[\s\S]*?(?=<h[1-6]\b|$)/gi,
+        ''
+      )
   }
 
   // 兼容 Markdown 场景（Action 最终 release note 模板）
   const removeDownloadSectionFromMarkdown = (input: string): string => {
     const lines = input.split(/\r?\n/)
     const output: string[] = []
-    let skipDownloadSection = false
+    let skipSection = false
 
     for (const line of lines) {
       const headingMatch = line.match(/^\s*#{1,6}\s*(.+?)\s*$/)
       if (headingMatch) {
-        const heading = headingMatch[1].trim().toLowerCase()
-        if (heading === '下载' || heading === 'download') {
-          skipDownloadSection = true
+        if (shouldStripReleaseSection(headingMatch[1])) {
+          skipSection = true
           continue
         }
-        if (skipDownloadSection) {
-          skipDownloadSection = false
+        if (skipSection) {
+          skipSection = false
         }
       }
-      if (!skipDownloadSection) {
+      if (!skipSection) {
         output.push(line)
       }
     }
@@ -1527,8 +1545,8 @@ function registerIpcHandlers() {
     return await chatService.resolveTransferDisplayNames(chatroomId, payerUsername, receiverUsername)
   })
 
-  ipcMain.handle('chat:getContacts', async () => {
-    return await chatService.getContacts()
+  ipcMain.handle('chat:getContacts', async (_, options?: { lite?: boolean }) => {
+    return await chatService.getContacts(options)
   })
 
   ipcMain.handle('chat:getCachedMessages', async (_, sessionId: string) => {
@@ -2140,6 +2158,13 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle(
+    'groupAnalytics:getGroupMemberAnalytics',
+    async (_, chatroomId: string, memberUsername: string, startTime?: number, endTime?: number) => {
+      return groupAnalyticsService.getGroupMemberAnalytics(chatroomId, memberUsername, startTime, endTime)
+    }
+  )
+
+  ipcMain.handle(
     'groupAnalytics:getGroupMemberMessages',
     async (
       _,
@@ -2587,8 +2612,9 @@ function registerIpcHandlers() {
   })
 
   // HTTP API 服务
-  ipcMain.handle('http:start', async (_, port?: number) => {
-    return httpService.start(port || 5031)
+  ipcMain.handle('http:start', async (_, port?: number, host?: string) => {
+    const bindHost = typeof host === 'string' && host.trim() ? host.trim() : '127.0.0.1'
+    return httpService.start(port || 5031, bindHost)
   })
 
   ipcMain.handle('http:stop', async () => {
@@ -2806,6 +2832,8 @@ app.whenReady().then(async () => {
 
   // 启动时检测更新（不阻塞启动）
   checkForUpdatesOnStartup()
+
+  await httpService.autoStart()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
