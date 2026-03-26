@@ -308,4 +308,4 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest --no-fail-on-no-release --draft=false --prerelease=false
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --latest --draft=false --prerelease=false
