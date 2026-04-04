@@ -430,6 +430,8 @@ class ExportService {
     let lastSessionId = ''
     let lastCollected = 0
     let lastExported = 0
+    const MIN_PROGRESS_EMIT_INTERVAL_MS = 250
+    const MESSAGE_PROGRESS_DELTA_THRESHOLD = 500
 
     const commit = (progress: ExportProgress) => {
       onProgress(progress)
@@ -454,9 +456,9 @@ class ExportService {
       const shouldEmit = force ||
         phase !== lastPhase ||
         sessionId !== lastSessionId ||
-        collectedDelta >= 200 ||
-        exportedDelta >= 200 ||
-        (now - lastSentAt >= 120)
+        collectedDelta >= MESSAGE_PROGRESS_DELTA_THRESHOLD ||
+        exportedDelta >= MESSAGE_PROGRESS_DELTA_THRESHOLD ||
+        (now - lastSentAt >= MIN_PROGRESS_EMIT_INTERVAL_MS)
 
       if (shouldEmit && pending) {
         commit(pending)
@@ -3537,20 +3539,11 @@ class ExportService {
           console.log(`[Export] 使用缩略图替代 (localId=${msg.localId}): ${thumbResult.localPath}`)
           result.localPath = thumbResult.localPath
         } else {
-          console.log(`[Export] 缩略图也获取失败 (localId=${msg.localId}): error=${thumbResult.error || '未知'}`)
-          // 最后尝试：直接从 imageStore 获取缓存的缩略图 data URL
-          const { imageStore } = await import('../main')
-          const cachedThumb = imageStore?.getCachedImage(sessionId, imageMd5, imageDatName)
-          if (cachedThumb) {
-            console.log(`[Export] 从 imageStore 获取到缓存缩略图 (localId=${msg.localId})`)
-            result.localPath = cachedThumb
-          } else {
-            console.log(`[Export] 所有方式均失败 → 将显示 [图片] 占位符`)
-            if (missingRunCacheKey) {
-              this.mediaRunMissingImageKeys.add(missingRunCacheKey)
-            }
-            return null
+          console.log(`[Export] 缩略图也获取失败，所有方式均失败 → 将显示 [图片] 占位符`)
+          if (missingRunCacheKey) {
+            this.mediaRunMissingImageKeys.add(missingRunCacheKey)
           }
+          return null
         }
       }
 
@@ -3559,7 +3552,7 @@ class ExportService {
       const imageKey = (imageMd5 || imageDatName || 'image').replace(/[^a-zA-Z0-9_-]/g, '')
 
       // 从 data URL 或 file URL 获取实际路径
-      let sourcePath = result.localPath
+      let sourcePath: string = result.localPath!
       if (sourcePath.startsWith('data:')) {
         // 是 data URL，需要保存为文件
         const base64Data = sourcePath.split(',')[1]
@@ -8389,22 +8382,22 @@ class ExportService {
 
               const metric = aggregatedData?.[sessionId]
               const totalCount = Number.isFinite(metric?.totalMessages)
-                ? Math.max(0, Math.floor(metric!.totalMessages))
+                ? Math.max(0, Math.floor(metric?.totalMessages ?? 0))
                 : 0
               const voiceCount = Number.isFinite(metric?.voiceMessages)
-                ? Math.max(0, Math.floor(metric!.voiceMessages))
+                ? Math.max(0, Math.floor(metric?.voiceMessages ?? 0))
                 : 0
               const imageCount = Number.isFinite(metric?.imageMessages)
-                ? Math.max(0, Math.floor(metric!.imageMessages))
+                ? Math.max(0, Math.floor(metric?.imageMessages ?? 0))
                 : 0
               const videoCount = Number.isFinite(metric?.videoMessages)
-                ? Math.max(0, Math.floor(metric!.videoMessages))
+                ? Math.max(0, Math.floor(metric?.videoMessages ?? 0))
                 : 0
               const emojiCount = Number.isFinite(metric?.emojiMessages)
-                ? Math.max(0, Math.floor(metric!.emojiMessages))
+                ? Math.max(0, Math.floor(metric?.emojiMessages ?? 0))
                 : 0
               const lastTimestamp = Number.isFinite(metric?.lastTimestamp)
-                ? Math.max(0, Math.floor(metric!.lastTimestamp))
+                ? Math.max(0, Math.floor(metric?.lastTimestamp ?? 0))
                 : undefined
               const cachedCountRaw = Number(cachedVoiceCountMap[sessionId] || 0)
               const sessionCachedVoiceCount = Math.min(

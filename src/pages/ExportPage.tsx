@@ -181,6 +181,7 @@ interface ExportDialogState {
 
 const defaultTxtColumns = ['index', 'time', 'senderRole', 'messageType', 'content']
 const DETAIL_PRECISE_REFRESH_COOLDOWN_MS = 10 * 60 * 1000
+const TASK_PERFORMANCE_UPDATE_MIN_INTERVAL_MS = 900
 const SESSION_MEDIA_METRIC_PREFETCH_ROWS = 10
 const SESSION_MEDIA_METRIC_BATCH_SIZE = 8
 const SESSION_MEDIA_METRIC_BACKGROUND_FEED_SIZE = 48
@@ -311,9 +312,7 @@ const cloneTaskPerformance = (performance?: TaskPerformance): TaskPerformance =>
     write: performance?.stages.write || 0,
     other: performance?.stages.other || 0
   },
-  sessions: Object.fromEntries(
-    Object.entries(performance?.sessions || {}).map(([sessionId, session]) => [sessionId, { ...session }])
-  )
+  sessions: { ...(performance?.sessions || {}) }
 })
 
 const resolveTaskSessionName = (task: ExportTask, sessionId: string, fallback?: string): string => {
@@ -332,6 +331,18 @@ const applyProgressToTaskPerformance = (
   if (!isTextBatchTask(task)) return task.performance
   const sessionId = String(payload.currentSessionId || '').trim()
   if (!sessionId) return task.performance || createEmptyTaskPerformance()
+
+  const currentPerformance = task.performance
+  const currentSession = currentPerformance?.sessions?.[sessionId]
+  if (
+    payload.phase !== 'complete' &&
+    currentSession &&
+    currentSession.lastPhase === payload.phase &&
+    typeof currentSession.lastPhaseStartedAt === 'number' &&
+    now - currentSession.lastPhaseStartedAt < TASK_PERFORMANCE_UPDATE_MIN_INTERVAL_MS
+  ) {
+    return currentPerformance
+  }
 
   const performance = cloneTaskPerformance(task.performance)
   const sessionName = resolveTaskSessionName(task, sessionId, payload.currentSession || sessionId)
@@ -368,7 +379,9 @@ const applyProgressToTaskPerformance = (
 const finalizeTaskPerformance = (task: ExportTask, now: number): TaskPerformance | undefined => {
   if (!isTextBatchTask(task) || !task.performance) return task.performance
   const performance = cloneTaskPerformance(task.performance)
-  for (const session of Object.values(performance.sessions)) {
+  const nextSessions: Record<string, TaskSessionPerformance> = {}
+  for (const [sessionId, sourceSession] of Object.entries(performance.sessions)) {
+    const session: TaskSessionPerformance = { ...sourceSession }
     if (session.finishedAt) continue
     if (session.lastPhase && typeof session.lastPhaseStartedAt === 'number') {
       const delta = Math.max(0, now - session.lastPhaseStartedAt)
@@ -378,7 +391,13 @@ const finalizeTaskPerformance = (task: ExportTask, now: number): TaskPerformance
     session.finishedAt = now
     session.lastPhase = undefined
     session.lastPhaseStartedAt = undefined
+    nextSessions[sessionId] = session
   }
+  for (const [sessionId, sourceSession] of Object.entries(performance.sessions)) {
+    if (nextSessions[sessionId]) continue
+    nextSessions[sessionId] = { ...sourceSession }
+  }
+  performance.sessions = nextSessions
   return performance
 }
 
@@ -4697,7 +4716,7 @@ function ExportPage() {
         queuedProgressTimer = window.setTimeout(() => {
           queuedProgressTimer = null
           flushQueuedProgress()
-        }, 100)
+        }, 180)
       })
     }
     if (next.payload.scope === 'sns') {

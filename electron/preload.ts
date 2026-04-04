@@ -190,6 +190,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('chat:updateMessage', sessionId, localId, createTime, newContent),
     deleteMessage: (sessionId: string, localId: number, createTime: number, dbPathHint?: string) =>
       ipcRenderer.invoke('chat:deleteMessage', sessionId, localId, createTime, dbPathHint),
+    checkAntiRevokeTriggers: (sessionIds: string[]) =>
+      ipcRenderer.invoke('chat:checkAntiRevokeTriggers', sessionIds),
+    installAntiRevokeTriggers: (sessionIds: string[]) =>
+      ipcRenderer.invoke('chat:installAntiRevokeTriggers', sessionIds),
+    uninstallAntiRevokeTriggers: (sessionIds: string[]) =>
+      ipcRenderer.invoke('chat:uninstallAntiRevokeTriggers', sessionIds),
     resolveTransferDisplayNames: (chatroomId: string, payerUsername: string, receiverUsername: string) =>
       ipcRenderer.invoke('chat:resolveTransferDisplayNames', chatroomId, payerUsername, receiverUsername),
     getMyAvatarUrl: () => ipcRenderer.invoke('chat:getMyAvatarUrl'),

@@ -61,6 +61,7 @@ interface ConfigSchema {
   windowCloseBehavior: 'ask' | 'tray' | 'quit'
   quoteLayout: 'quote-top' | 'quote-bottom'
   wordCloudExcludeWords: string[]
+  exportWriteLayout: 'A' | 'B' | 'C'
 }
 
 // 需要 safeStorage 加密的字段（普通模式）
@@ -133,7 +134,8 @@ export class ConfigService {
       messagePushEnabled: false,
       windowCloseBehavior: 'ask',
       quoteLayout: 'quote-top',
-      wordCloudExcludeWords: []
+      wordCloudExcludeWords: [],
+      exportWriteLayout: 'A'
     }
 
     const storeOptions: any = {

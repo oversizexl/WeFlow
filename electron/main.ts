@@ -1867,6 +1867,18 @@ function registerIpcHandlers() {
     return chatService.deleteMessage(sessionId, localId, createTime, dbPathHint)
   })
 
+  ipcMain.handle('chat:checkAntiRevokeTriggers', async (_, sessionIds: string[]) => {
+    return chatService.checkAntiRevokeTriggers(sessionIds)
+  })
+
+  ipcMain.handle('chat:installAntiRevokeTriggers', async (_, sessionIds: string[]) => {
+    return chatService.installAntiRevokeTriggers(sessionIds)
+  })
+
+  ipcMain.handle('chat:uninstallAntiRevokeTriggers', async (_, sessionIds: string[]) => {
+    return chatService.uninstallAntiRevokeTriggers(sessionIds)
+  })
+
   ipcMain.handle('chat:getContact', async (_, username: string) => {
     return await chatService.getContact(username)
   })
@@ -2299,10 +2311,47 @@ function registerIpcHandlers() {
   })
 
   ipcMain.handle('export:exportSessions', async (event, sessionIds: string[], outputDir: string, options: ExportOptions) => {
-    const onProgress = (progress: ExportProgress) => {
-      if (!event.sender.isDestroyed()) {
-        event.sender.send('export:progress', progress)
+    const PROGRESS_FORWARD_INTERVAL_MS = 180
+    let pendingProgress: ExportProgress | null = null
+    let progressTimer: NodeJS.Timeout | null = null
+    let lastProgressSentAt = 0
+
+    const flushProgress = () => {
+      if (!pendingProgress) return
+      if (progressTimer) {
+        clearTimeout(progressTimer)
+        progressTimer = null
       }
+      if (!event.sender.isDestroyed()) {
+        event.sender.send('export:progress', pendingProgress)
+      }
+      pendingProgress = null
+      lastProgressSentAt = Date.now()
+    }
+
+    const queueProgress = (progress: ExportProgress) => {
+      pendingProgress = progress
+      const force = progress.phase === 'complete'
+      if (force) {
+        flushProgress()
+        return
+      }
+
+      const now = Date.now()
+      const elapsed = now - lastProgressSentAt
+      if (elapsed >= PROGRESS_FORWARD_INTERVAL_MS) {
+        flushProgress()
+        return
+      }
+
+      if (progressTimer) return
+      progressTimer = setTimeout(() => {
+        flushProgress()
+      }, PROGRESS_FORWARD_INTERVAL_MS - elapsed)
+    }
+
+    const onProgress = (progress: ExportProgress) => {
+      queueProgress(progress)
     }
 
     const runMainFallback = async (reason: string) => {
@@ -2381,6 +2430,12 @@ function registerIpcHandlers() {
       return await runWorker()
     } catch (error) {
       return runMainFallback(error instanceof Error ? error.message : String(error))
+    } finally {
+      flushProgress()
+      if (progressTimer) {
+        clearTimeout(progressTimer)
+        progressTimer = null
+      }
     }
   })
 

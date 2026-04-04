@@ -561,6 +561,24 @@ export class WcdbService {
     return this.callWorker('getSnsExportStats', { myWxid })
   }
 
+  async checkMessageAntiRevokeTriggers(
+    sessionIds: string[]
+  ): Promise<{ success: boolean; rows?: Array<{ sessionId: string; success: boolean; installed?: boolean; error?: string }>; error?: string }> {
+    return this.callWorker('checkMessageAntiRevokeTriggers', { sessionIds })
+  }
+
+  async installMessageAntiRevokeTriggers(
+    sessionIds: string[]
+  ): Promise<{ success: boolean; rows?: Array<{ sessionId: string; success: boolean; alreadyInstalled?: boolean; error?: string }>; error?: string }> {
+    return this.callWorker('installMessageAntiRevokeTriggers', { sessionIds })
+  }
+
+  async uninstallMessageAntiRevokeTriggers(
+    sessionIds: string[]
+  ): Promise<{ success: boolean; rows?: Array<{ sessionId: string; success: boolean; error?: string }>; error?: string }> {
+    return this.callWorker('uninstallMessageAntiRevokeTriggers', { sessionIds })
+  }
+
   /**
    * 安装朋友圈删除拦截
    */

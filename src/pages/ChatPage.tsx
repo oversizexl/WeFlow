@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Link, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper } from 'lucide-react'
+import { Search, MessageSquare, AlertCircle, Loader2, RefreshCw, X, ChevronDown, ChevronLeft, Info, Calendar, Database, Hash, Play, Pause, Image as ImageIcon, Mic, CheckCircle, Copy, Check, CheckSquare, Download, BarChart3, Edit2, Trash2, BellOff, Users, FolderClosed, UserCheck, Crown, Aperture, Newspaper } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { createPortal } from 'react-dom'
 import { Virtuoso, type VirtuosoHandle } from 'react-virtuoso'
@@ -64,6 +64,9 @@ const GLOBAL_MSG_LEGACY_CONCURRENCY = 6
 const GLOBAL_MSG_SEARCH_CANCELED_ERROR = '__WEFLOW_GLOBAL_MSG_SEARCH_CANCELED__'
 const GLOBAL_MSG_SHADOW_COMPARE_SAMPLE_RATE = 0.2
 const GLOBAL_MSG_SHADOW_COMPARE_STORAGE_KEY = 'weflow.debug.searchShadowCompare'
+const MESSAGE_LIST_SCROLL_IDLE_MS = 160
+const MESSAGE_TOP_WHEEL_LOAD_COOLDOWN_MS = 160
+const MESSAGE_EDGE_TRIGGER_DISTANCE_PX = 96
 
 function isGlobalMsgSearchCanceled(error: unknown): boolean {
   return String(error || '') === GLOBAL_MSG_SEARCH_CANCELED_ERROR
@@ -208,6 +211,12 @@ function sortMessagesByCreateTimeDesc<T extends Pick<Message, 'createTime' | 'lo
     if (timeDiff !== 0) return timeDiff
     return (b.localId || 0) - (a.localId || 0)
   })
+}
+
+function isRenderableImageSrc(value?: string | null): boolean {
+  const src = String(value || '').trim()
+  if (!src) return false
+  return /^(https?:\/\/|data:image\/|blob:|file:\/\/|\/)/i.test(src)
 }
 
 function normalizeSearchIdentityText(value?: string | null): string | undefined {
@@ -1179,7 +1188,12 @@ function ChatPage(props: ChatPageProps) {
   const visibleMessageRangeRef = useRef<{ startIndex: number; endIndex: number }>({ startIndex: 0, endIndex: 0 })
   const topRangeLoadLockRef = useRef(false)
   const bottomRangeLoadLockRef = useRef(false)
+  const topRangeLoadLastTriggerAtRef = useRef(0)
   const suppressAutoLoadLaterRef = useRef(false)
+  const suppressAutoScrollOnNextMessageGrowthRef = useRef(false)
+  const prependingHistoryRef = useRef(false)
+  const isMessageListScrollingRef = useRef(false)
+  const messageListScrollTimeoutRef = useRef<number | null>(null)
   const searchInputRef = useRef<HTMLInputElement>(null)
   const sidebarRef = useRef<HTMLDivElement>(null)
   const handleMessageListScrollParentRef = useCallback((node: HTMLDivElement | null) => {
@@ -1398,6 +1412,18 @@ function ChatPage(props: ChatPageProps) {
       suppressScrollToBottomButtonRef.current = false
       scrollBottomButtonArmTimerRef.current = null
     }, delayMs)
+  }, [])
+
+  const markMessageListScrolling = useCallback(() => {
+    isMessageListScrollingRef.current = true
+    if (messageListScrollTimeoutRef.current !== null) {
+      window.clearTimeout(messageListScrollTimeoutRef.current)
+      messageListScrollTimeoutRef.current = null
+    }
+    messageListScrollTimeoutRef.current = window.setTimeout(() => {
+      isMessageListScrollingRef.current = false
+      messageListScrollTimeoutRef.current = null
+    }, MESSAGE_LIST_SCROLL_IDLE_MS)
   }, [])
 
   const isGroupChatSession = useCallback((username: string) => {
@@ -3246,6 +3272,29 @@ function ChatPage(props: ChatPageProps) {
     runWarmup()
   }, [loadContactInfoBatch])
 
+  const scheduleGroupSenderWarmup = useCallback((usernames: string[], defer = false) => {
+    if (!Array.isArray(usernames) || usernames.length === 0) return
+    const run = () => warmupGroupSenderProfiles(usernames, false)
+    if (!defer && !isMessageListScrollingRef.current) {
+      run()
+      return
+    }
+
+    const runWhenIdle = () => {
+      if (isMessageListScrollingRef.current) {
+        window.setTimeout(runWhenIdle, MESSAGE_LIST_SCROLL_IDLE_MS)
+        return
+      }
+      run()
+    }
+
+    if ('requestIdleCallback' in window) {
+      window.requestIdleCallback(runWhenIdle, { timeout: 1200 })
+    } else {
+      window.setTimeout(runWhenIdle, MESSAGE_LIST_SCROLL_IDLE_MS)
+    }
+  }, [warmupGroupSenderProfiles])
+
   // 加载消息
   const loadMessages = async (
     sessionId: string,
@@ -3255,6 +3304,10 @@ function ChatPage(props: ChatPageProps) {
     ascending = false,
     options: LoadMessagesOptions = {}
   ) => {
+    const isPrependHistoryLoad = offset > 0 && !ascending
+    if (isPrependHistoryLoad) {
+      prependingHistoryRef.current = true
+    }
     const listEl = messageListRef.current
     const session = sessionMapRef.current.get(sessionId)
     const unreadCount = session?.unreadCount ?? 0
@@ -3288,10 +3341,6 @@ function ChatPage(props: ChatPageProps) {
       Math.max(visibleRange.startIndex, 0),
       Math.max(messages.length - 1, 0)
     )
-    const anchorMessageKeyBeforePrepend = offset > 0 && messages.length > 0
-      ? getMessageKey(messages[visibleStartIndex])
-      : null
-
     // 记录加载前的第一条消息元素（非虚拟列表回退路径）
     const firstMsgEl = listEl?.querySelector('.message-wrapper') as HTMLElement | null
 
@@ -3340,12 +3389,11 @@ function ChatPage(props: ChatPageProps) {
               .map(m => m.senderUsername as string)
             )]
             if (unknownSenders.length > 0) {
-              warmupGroupSenderProfiles(unknownSenders, options.deferGroupSenderWarmup === true)
+              scheduleGroupSenderWarmup(unknownSenders, options.deferGroupSenderWarmup === true)
             }
           }
 
           // 日期跳转时滚动到顶部，否则滚动到底部
-          const loadedMessages = result.messages
           requestAnimationFrame(() => {
             if (isDateJumpRef.current) {
               if (messageVirtuosoRef.current && resultMessages.length > 0) {
@@ -3365,6 +3413,19 @@ function ChatPage(props: ChatPageProps) {
             }
           })
         } else {
+          const existingMessageKeys = messageKeySetRef.current
+          const incomingSeen = new Set<string>()
+          let prependedInsertedCount = 0
+          for (const row of resultMessages) {
+            const key = getMessageKey(row)
+            if (incomingSeen.has(key)) continue
+            incomingSeen.add(key)
+            if (!existingMessageKeys.has(key)) {
+              prependedInsertedCount += 1
+            }
+          }
+
+          suppressAutoScrollOnNextMessageGrowthRef.current = true
           appendMessages(resultMessages, true)
 
           // 加载更多也同样处理发送者信息预取
@@ -3375,24 +3436,20 @@ function ChatPage(props: ChatPageProps) {
               .map(m => m.senderUsername as string)
             )]
             if (unknownSenders.length > 0) {
-              warmupGroupSenderProfiles(unknownSenders, false)
+              scheduleGroupSenderWarmup(unknownSenders, false)
             }
           }
 
           // 加载更早消息后保持视口锚点，避免跳屏
-          const appendedMessages = result.messages
           requestAnimationFrame(() => {
             if (messageVirtuosoRef.current) {
-              if (anchorMessageKeyBeforePrepend) {
-                const latestMessages = useChatStore.getState().messages || []
-                const anchorIndex = latestMessages.findIndex((msg) => getMessageKey(msg) === anchorMessageKeyBeforePrepend)
-                if (anchorIndex >= 0) {
-                  messageVirtuosoRef.current.scrollToIndex({ index: anchorIndex, align: 'start', behavior: 'auto' })
-                  return
-                }
-              }
-              if (resultMessages.length > 0) {
-                messageVirtuosoRef.current.scrollToIndex({ index: resultMessages.length, align: 'start', behavior: 'auto' })
+              const latestMessages = useChatStore.getState().messages || []
+              const anchorIndex = Math.min(
+                Math.max(visibleStartIndex + prependedInsertedCount, 0),
+                Math.max(latestMessages.length - 1, 0)
+              )
+              if (latestMessages.length > 0) {
+                messageVirtuosoRef.current.scrollToIndex({ index: anchorIndex, align: 'start', behavior: 'auto' })
               }
               return
             }
@@ -3432,6 +3489,11 @@ function ChatPage(props: ChatPageProps) {
         setMessages([])
       }
     } finally {
+      if (isPrependHistoryLoad) {
+        requestAnimationFrame(() => {
+          prependingHistoryRef.current = false
+        })
+      }
       setLoadingMessages(false)
       setLoadingMore(false)
       if (offset === 0 && pendingSessionLoadRef.current === sessionId) {
@@ -3462,9 +3524,11 @@ function ChatPage(props: ChatPageProps) {
     setCurrentOffset(0)
     setJumpStartTime(0)
     setJumpEndTime(end)
+    suppressAutoLoadLaterRef.current = true
     setShowJumpPopover(false)
     void loadMessages(targetSessionId, 0, 0, end, false, {
-      switchRequestSeq: options.switchRequestSeq
+      switchRequestSeq: options.switchRequestSeq,
+      forceInitialLimit: 120
     })
   }, [currentSessionId, loadMessages])
 
@@ -4380,36 +4444,6 @@ function ChatPage(props: ChatPageProps) {
       return
     }
 
-    if (range.endIndex >= Math.max(total - 2, 0)) {
-      isMessageListAtBottomRef.current = true
-      setShowScrollToBottom(prev => (prev ? false : prev))
-    }
-
-    if (
-      range.startIndex <= 2 &&
-      !topRangeLoadLockRef.current &&
-      !isLoadingMore &&
-      !isLoadingMessages &&
-      hasMoreMessages &&
-      currentSessionId
-    ) {
-      topRangeLoadLockRef.current = true
-      void loadMessages(currentSessionId, currentOffset, jumpStartTime, jumpEndTime)
-    }
-
-    if (
-      range.endIndex >= total - 3 &&
-      !bottomRangeLoadLockRef.current &&
-      !suppressAutoLoadLaterRef.current &&
-      !isLoadingMore &&
-      !isLoadingMessages &&
-      hasMoreLater &&
-      currentSessionId
-    ) {
-      bottomRangeLoadLockRef.current = true
-      void loadLaterMessages()
-    }
-
     if (shouldWarmupVisibleGroupSenders) {
       const now = Date.now()
       if (now - lastVisibleSenderWarmupAtRef.current >= 180) {
@@ -4428,27 +4462,18 @@ function ChatPage(props: ChatPageProps) {
           if (pendingUsernames.size >= 24) break
         }
         if (pendingUsernames.size > 0) {
-          warmupGroupSenderProfiles([...pendingUsernames], false)
+          scheduleGroupSenderWarmup([...pendingUsernames], false)
         }
       }
     }
   }, [
     messages.length,
-    isLoadingMore,
-    isLoadingMessages,
-    hasMoreMessages,
-    hasMoreLater,
     currentSessionId,
-    currentOffset,
-    jumpStartTime,
-    jumpEndTime,
     isGroupChatSession,
     standaloneSessionWindow,
     normalizedInitialSessionId,
     normalizedStandaloneInitialContactType,
-    warmupGroupSenderProfiles,
-    loadMessages,
-    loadLaterMessages
+    scheduleGroupSenderWarmup
   ])
 
   const handleMessageAtBottomStateChange = useCallback((atBottom: boolean) => {
@@ -4462,9 +4487,8 @@ function ChatPage(props: ChatPageProps) {
     const distanceFromBottom = listEl
       ? (listEl.scrollHeight - (listEl.scrollTop + listEl.clientHeight))
       : Number.POSITIVE_INFINITY
-    const nearBottomByRange = visibleMessageRangeRef.current.endIndex >= Math.max(messages.length - 2, 0)
     const nearBottomByDistance = distanceFromBottom <= 140
-    const effectiveAtBottom = atBottom || nearBottomByRange || nearBottomByDistance
+    const effectiveAtBottom = atBottom || nearBottomByDistance
     isMessageListAtBottomRef.current = effectiveAtBottom
 
     if (!effectiveAtBottom) {
@@ -4492,19 +4516,48 @@ function ChatPage(props: ChatPageProps) {
   }, [messages.length, isLoadingMessages, isLoadingMore, isSessionSwitching])
 
   const handleMessageListWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    if (event.deltaY <= 18) return
-    if (!currentSessionId || isLoadingMore || isLoadingMessages || !hasMoreLater) return
+    markMessageListScrolling()
+    if (!currentSessionId || isLoadingMore || isLoadingMessages) return
     const listEl = messageListRef.current
     if (!listEl) return
+    const distanceFromTop = listEl.scrollTop
     const distanceFromBottom = listEl.scrollHeight - (listEl.scrollTop + listEl.clientHeight)
-    if (distanceFromBottom > 96) return
+
+    if (event.deltaY <= -18) {
+      if (!hasMoreMessages) return
+      if (distanceFromTop > MESSAGE_EDGE_TRIGGER_DISTANCE_PX) return
+      if (topRangeLoadLockRef.current) return
+      const now = Date.now()
+      if (now - topRangeLoadLastTriggerAtRef.current < MESSAGE_TOP_WHEEL_LOAD_COOLDOWN_MS) return
+      topRangeLoadLastTriggerAtRef.current = now
+      topRangeLoadLockRef.current = true
+      isMessageListAtBottomRef.current = false
+      void loadMessages(currentSessionId, currentOffset, jumpStartTime, jumpEndTime)
+      return
+    }
+
+    if (event.deltaY <= 18) return
+    if (!hasMoreLater) return
+    if (distanceFromBottom > MESSAGE_EDGE_TRIGGER_DISTANCE_PX) return
     if (bottomRangeLoadLockRef.current) return
 
     // 用户明确向下滚动时允许加载后续消息
     suppressAutoLoadLaterRef.current = false
     bottomRangeLoadLockRef.current = true
     void loadLaterMessages()
-  }, [currentSessionId, hasMoreLater, isLoadingMessages, isLoadingMore, loadLaterMessages])
+  }, [
+    currentSessionId,
+    hasMoreLater,
+    hasMoreMessages,
+    isLoadingMessages,
+    isLoadingMore,
+    currentOffset,
+    jumpStartTime,
+    jumpEndTime,
+    markMessageListScrolling,
+    loadMessages,
+    loadLaterMessages
+  ])
 
   const handleMessageAtTopStateChange = useCallback((atTop: boolean) => {
     if (!atTop) {
@@ -4659,6 +4712,11 @@ function ChatPage(props: ChatPageProps) {
       if (sessionScrollTimeoutRef.current) {
         clearTimeout(sessionScrollTimeoutRef.current)
       }
+      if (messageListScrollTimeoutRef.current !== null) {
+        window.clearTimeout(messageListScrollTimeoutRef.current)
+        messageListScrollTimeoutRef.current = null
+      }
+      isMessageListScrollingRef.current = false
       contactUpdateQueueRef.current.clear()
       pendingSessionContactEnrichRef.current.clear()
       sessionContactEnrichAttemptAtRef.current.clear()
@@ -4699,8 +4757,12 @@ function ChatPage(props: ChatPageProps) {
     lastObservedMessageCountRef.current = currentCount
     if (currentCount <= previousCount) return
     if (!currentSessionId || isLoadingMessages || isSessionSwitching) return
-    const wasNearBottomByRange = visibleMessageRangeRef.current.endIndex >= Math.max(previousCount - 2, 0)
-    if (!isMessageListAtBottomRef.current && !wasNearBottomByRange) return
+    if (suppressAutoScrollOnNextMessageGrowthRef.current || prependingHistoryRef.current) {
+      suppressAutoScrollOnNextMessageGrowthRef.current = false
+      return
+    }
+    if (!isMessageListAtBottomRef.current) return
+    if (suppressAutoLoadLaterRef.current) return
     suppressScrollToBottomButton(220)
     isMessageListAtBottomRef.current = true
     requestAnimationFrame(() => {
@@ -6603,6 +6665,7 @@ function ChatPage(props: ChatPageProps) {
               <div
                 className={`message-list ${hasInitialMessages ? 'loaded' : 'loading'}`}
                 ref={handleMessageListScrollParentRef}
+                onScroll={markMessageListScrolling}
                 onWheel={handleMessageListWheel}
               >
                 {!isLoadingMessages && messages.length === 0 && !hasMoreMessages ? (
@@ -6616,8 +6679,12 @@ function ChatPage(props: ChatPageProps) {
                     className="message-virtuoso"
                     customScrollParent={messageListScrollParent ?? undefined}
                     data={messages}
-                    overscan={360}
-                    followOutput={(atBottom) => (atBottom || isMessageListAtBottomRef.current ? 'auto' : false)}
+                    overscan={220}
+                    followOutput={(atBottom) => (
+                      prependingHistoryRef.current
+                        ? false
+                        : (atBottom && isMessageListAtBottomRef.current ? 'auto' : false)
+                    )}
                     atBottomThreshold={80}
                     atBottomStateChange={handleMessageAtBottomStateChange}
                     atTopStateChange={handleMessageAtTopStateChange}
@@ -7659,6 +7726,8 @@ function MessageBubble({
   // State variables...
   const [imageError, setImageError] = useState(false)
   const [imageLoading, setImageLoading] = useState(false)
+  const [imageLoaded, setImageLoaded] = useState(false)
+  const [imageStageLockHeight, setImageStageLockHeight] = useState<number | null>(null)
   const [imageHasUpdate, setImageHasUpdate] = useState(false)
   const [imageClicked, setImageClicked] = useState(false)
   const imageUpdateCheckedRef = useRef<string | null>(null)
@@ -7704,6 +7773,11 @@ function MessageBubble({
   const videoContainerRef = useRef<HTMLElement>(null)
   const [isVideoVisible, setIsVideoVisible] = useState(false)
   const [videoMd5, setVideoMd5] = useState<string | null>(null)
+  const imageStageLockStyle = useMemo<React.CSSProperties | undefined>(() => (
+    imageStageLockHeight && imageStageLockHeight > 0
+      ? { height: `${Math.round(imageStageLockHeight)}px` }
+      : undefined
+  ), [imageStageLockHeight])
 
   // 解析视频 MD5
   useEffect(() => {
@@ -7847,6 +7921,14 @@ function MessageBubble({
     captureResizeBaseline(imageContainerRef.current, imageResizeBaselineRef)
   }, [captureResizeBaseline])
 
+  const lockImageStageHeight = useCallback(() => {
+    const host = imageContainerRef.current
+    if (!host) return
+    const height = host.getBoundingClientRect().height
+    if (!Number.isFinite(height) || height <= 0) return
+    setImageStageLockHeight(Math.round(height))
+  }, [])
+
   const captureEmojiResizeBaseline = useCallback(() => {
     captureResizeBaseline(emojiContainerRef.current, emojiResizeBaselineRef)
   }, [captureResizeBaseline])
@@ -7854,6 +7936,12 @@ function MessageBubble({
   const stabilizeImageScrollAfterResize = useCallback(() => {
     stabilizeScrollAfterResize(imageContainerRef.current, imageResizeBaselineRef)
   }, [stabilizeScrollAfterResize])
+
+  const releaseImageStageLock = useCallback(() => {
+    window.requestAnimationFrame(() => {
+      setImageStageLockHeight(null)
+    })
+  }, [])
 
   const stabilizeEmojiScrollAfterResize = useCallback(() => {
     stabilizeScrollAfterResize(emojiContainerRef.current, emojiResizeBaselineRef)
@@ -8008,6 +8096,7 @@ function MessageBubble({
           imageDataUrlCache.set(imageCacheKey, result.localPath)
           if (imageLocalPath !== result.localPath) {
             captureImageResizeBaseline()
+            lockImageStageHeight()
           }
           setImageLocalPath(result.localPath)
           setImageHasUpdate(false)
@@ -8023,6 +8112,7 @@ function MessageBubble({
         imageDataUrlCache.set(imageCacheKey, dataUrl)
         if (imageLocalPath !== dataUrl) {
           captureImageResizeBaseline()
+          lockImageStageHeight()
         }
         setImageLocalPath(dataUrl)
         setImageHasUpdate(false)
@@ -8036,7 +8126,7 @@ function MessageBubble({
       imageDecryptPendingRef.current = false
     }
     return { success: false }
-  }, [isImage, message.imageMd5, message.imageDatName, message.localId, session.username, imageCacheKey, detectImageMimeFromBase64, imageLocalPath, captureImageResizeBaseline])
+  }, [isImage, message.imageMd5, message.imageDatName, message.localId, session.username, imageCacheKey, detectImageMimeFromBase64, imageLocalPath, captureImageResizeBaseline, lockImageStageHeight])
 
   const triggerForceHd = useCallback(() => {
     if (!message.imageMd5 && !message.imageDatName) return
@@ -8099,6 +8189,7 @@ function MessageBubble({
           imageDataUrlCache.set(imageCacheKey, resolved.localPath)
           if (imageLocalPath !== resolved.localPath) {
             captureImageResizeBaseline()
+            lockImageStageHeight()
           }
           setImageLocalPath(resolved.localPath)
           if (resolved.liveVideoPath) setImageLiveVideoPath(resolved.liveVideoPath)
@@ -8113,6 +8204,7 @@ function MessageBubble({
     imageLocalPath,
     imageCacheKey,
     captureImageResizeBaseline,
+    lockImageStageHeight,
     message.imageDatName,
     message.imageMd5,
     requestImageDecrypt,
@@ -8126,6 +8218,16 @@ function MessageBubble({
       }
     }
   }, [])
+
+  useEffect(() => {
+    setImageLoaded(false)
+  }, [imageLocalPath])
+
+  useEffect(() => {
+    if (imageLoading) return
+    if (!imageError && imageLocalPath) return
+    setImageStageLockHeight(null)
+  }, [imageError, imageLoading, imageLocalPath])
 
   useEffect(() => {
     if (!isImage || imageLoading) return
@@ -8143,6 +8245,7 @@ function MessageBubble({
         imageDataUrlCache.set(imageCacheKey, result.localPath)
         if (!imageLocalPath || imageLocalPath !== result.localPath) {
           captureImageResizeBaseline()
+          lockImageStageHeight()
           setImageLocalPath(result.localPath)
           setImageError(false)
         }
@@ -8153,7 +8256,7 @@ function MessageBubble({
     return () => {
       cancelled = true
     }
-  }, [isImage, imageLocalPath, imageLoading, message.imageMd5, message.imageDatName, imageCacheKey, session.username, captureImageResizeBaseline])
+  }, [isImage, imageLocalPath, imageLoading, message.imageMd5, message.imageDatName, imageCacheKey, session.username, captureImageResizeBaseline, lockImageStageHeight])
 
   useEffect(() => {
     if (!isImage) return
@@ -8187,6 +8290,7 @@ function MessageBubble({
         }
         if (imageLocalPath !== payload.localPath) {
           captureImageResizeBaseline()
+          lockImageStageHeight()
         }
         setImageLocalPath((prev) => (prev === payload.localPath ? prev : payload.localPath))
         setImageError(false)
@@ -8195,7 +8299,7 @@ function MessageBubble({
     return () => {
       unsubscribe?.()
     }
-  }, [isImage, imageCacheKey, imageLocalPath, message.imageDatName, message.imageMd5, captureImageResizeBaseline])
+  }, [isImage, imageCacheKey, imageLocalPath, message.imageDatName, message.imageMd5, captureImageResizeBaseline, lockImageStageHeight])
 
   // 图片进入视野前自动解密（懒加载）
   useEffect(() => {
@@ -8578,6 +8682,19 @@ function MessageBubble({
     appMsgTextCache.set(selector, value)
     return value
   }, [appMsgDoc, appMsgTextCache])
+  const appMsgThumbRawCandidate = useMemo(() => (
+    message.linkThumb ||
+    message.appMsgThumbUrl ||
+    queryAppMsgText('appmsg > thumburl') ||
+    queryAppMsgText('appmsg > cdnthumburl') ||
+    queryAppMsgText('appmsg > cover') ||
+    queryAppMsgText('appmsg > coverurl') ||
+    queryAppMsgText('thumburl') ||
+    queryAppMsgText('cdnthumburl') ||
+    queryAppMsgText('cover') ||
+    queryAppMsgText('coverurl') ||
+    ''
+  ).trim(), [message.linkThumb, message.appMsgThumbUrl, queryAppMsgText])
   const quotedSenderUsername = resolveQuotedSenderUsername(
     queryAppMsgText('refermsg > fromusr'),
     queryAppMsgText('refermsg > chatusr')
@@ -8711,6 +8828,17 @@ function MessageBubble({
   // Selection mode handling removed from here to allow normal rendering
   // We will wrap the output instead
   if (isSystem) {
+    const isPatSystemMessage = message.localType === 266287972401
+    const patTitleRaw = isPatSystemMessage
+      ? (queryAppMsgText('appmsg > title') || queryAppMsgText('title') || message.parsedContent || '')
+      : ''
+    const patDisplayText = isPatSystemMessage
+      ? cleanMessageContent(String(patTitleRaw).replace(/^\s*\[拍一拍\]\s*/i, ''))
+      : ''
+    const systemContentNode = isPatSystemMessage
+      ? renderTextWithEmoji(patDisplayText || '拍一拍')
+      : message.parsedContent
+
     return (
       <div
         className={`message-bubble system ${isSelectionMode ? 'selectable' : ''}`}
@@ -8739,7 +8867,7 @@ function MessageBubble({
             {isSelected && <Check size={14} strokeWidth={3} />}
           </div>
         )}
-        <div className="bubble-content">{message.parsedContent}</div>
+        <div className="bubble-content">{systemContentNode}</div>
       </div>
     )
   }
@@ -8748,7 +8876,11 @@ function MessageBubble({
   const renderContent = () => {
     if (isImage) {
       return (
-        <div ref={imageContainerRef}>
+        <div
+          ref={imageContainerRef}
+          className={`image-stage ${imageStageLockHeight ? 'locked' : ''}`}
+          style={imageStageLockStyle}
+        >
           {imageLoading ? (
             <div className="image-loading">
               <Loader2 size={20} className="spin" />
@@ -8770,15 +8902,19 @@ function MessageBubble({
                 <img
                   src={imageLocalPath}
                   alt="图片"
-                  className="image-message"
+                  className={`image-message ${imageLoaded ? 'ready' : 'pending'}`}
                   onClick={() => { void handleOpenImageViewer() }}
                   onLoad={() => {
+                    setImageLoaded(true)
                     setImageError(false)
                     stabilizeImageScrollAfterResize()
+                    releaseImageStageLock()
                   }}
                   onError={() => {
                     imageResizeBaselineRef.current = null
+                    setImageLoaded(false)
                     setImageError(true)
+                    releaseImageStageLock()
                   }}
                 />
                 {imageLiveVideoPath && (
@@ -9104,6 +9240,12 @@ function MessageBubble({
 
       const xmlType = message.xmlType || q('appmsg > type') || q('type')
 
+      // type 62: 拍一拍（按普通文本渲染，支持 [烟花] 这类 emoji 占位符）
+      if (xmlType === '62') {
+        const patText = cleanMessageContent((q('title') || cleanedParsedContent || '').replace(/^\s*\[拍一拍\]\s*/i, ''))
+        return <div className="bubble-content">{renderTextWithEmoji(patText || '拍一拍')}</div>
+      }
+
       // type 57: 引用回复消息，解析 refermsg 渲染为引用样式
       if (xmlType === '57') {
         const replyText = q('title') || cleanedParsedContent || ''
@@ -9147,7 +9289,8 @@ function MessageBubble({
       const title = message.linkTitle || q('title') || cleanedParsedContent || 'Card'
       const desc = message.appMsgDesc || q('des')
       const url = message.linkUrl || q('url')
-      const thumbUrl = message.linkThumb || message.appMsgThumbUrl || q('thumburl') || q('cdnthumburl') || q('cover') || q('coverurl')
+      const fallbackThumbUrl = appMsgThumbRawCandidate
+      const thumbUrl = isRenderableImageSrc(fallbackThumbUrl) ? fallbackThumbUrl : ''
       const musicUrl = message.appMsgMusicUrl || message.appMsgDataUrl || q('musicurl') || q('playurl') || q('dataurl') || q('lowurl')
       const sourceName = message.appMsgSourceName || q('sourcename')
       const sourceDisplayName = q('sourcedisplayname') || ''
@@ -9221,9 +9364,7 @@ function MessageBubble({
                 loading="lazy"
                 referrerPolicy="no-referrer"
               />
-            ) : (
-              <div className={`link-thumb-placeholder ${cardKind}`}>{cardKind.slice(0, 2).toUpperCase()}</div>
-            )}
+            ) : null}
           </div>
         </div>
       )
@@ -9663,9 +9804,6 @@ function MessageBubble({
             </div>
             <div className="link-body">
               <div className="link-desc" title={desc}>{desc}</div>
-              <div className="link-thumb-placeholder">
-                <Link size={24} />
-              </div>
             </div>
           </div>
         )

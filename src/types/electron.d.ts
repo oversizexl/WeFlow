@@ -226,6 +226,21 @@ export interface ElectronAPI {
     getContactAvatar: (username: string) => Promise<{ avatarUrl?: string; displayName?: string } | null>
     updateMessage: (sessionId: string, localId: number, createTime: number, newContent: string) => Promise<{ success: boolean; error?: string }>
     deleteMessage: (sessionId: string, localId: number, createTime: number, dbPathHint?: string) => Promise<{ success: boolean; error?: string }>
+    checkAntiRevokeTriggers: (sessionIds: string[]) => Promise<{
+      success: boolean
+      rows?: Array<{ sessionId: string; success: boolean; installed?: boolean; error?: string }>
+      error?: string
+    }>
+    installAntiRevokeTriggers: (sessionIds: string[]) => Promise<{
+      success: boolean
+      rows?: Array<{ sessionId: string; success: boolean; alreadyInstalled?: boolean; error?: string }>
+      error?: string
+    }>
+    uninstallAntiRevokeTriggers: (sessionIds: string[]) => Promise<{
+      success: boolean
+      rows?: Array<{ sessionId: string; success: boolean; error?: string }>
+      error?: string
+    }>
     resolveTransferDisplayNames: (chatroomId: string, payerUsername: string, receiverUsername: string) => Promise<{ payerName: string; receiverName: string }>
     getContacts: (options?: { lite?: boolean }) => Promise<{
       success: boolean

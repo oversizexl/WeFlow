@@ -2127,6 +2127,24 @@
   display: block;
   box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
   -webkit-app-region: no-drag;
+  transition: opacity 0.18s ease;
+}
+
+.image-message.pending {
+  opacity: 0;
+}
+
+.image-message.ready {
+  opacity: 1;
+}
+
+.image-stage {
+  display: inline-block;
+  -webkit-app-region: no-drag;
+}
+
+.image-stage.locked {
+  overflow: hidden;
 }
 
 .image-message-wrapper {
