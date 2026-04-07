@@ -11,6 +11,8 @@ permissions:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  FIXED_PREVIEW_TAG: nightly-preview
+  TARGET_BRANCH: main
   ELECTRON_BUILDER_BINARIES_MIRROR: https://github.com/electron-userland/electron-builder-binaries/releases/download/
 
 jobs:
@@ -23,6 +25,7 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Install Node.js
@@ -50,15 +53,36 @@ jobs:
             SHOULD_BUILD=false
           fi
 
-          BASE_VERSION="$(node -p "require('./package.json').version.split('-')[0]")"
           YEAR_2="$(TZ=Asia/Shanghai date +%y)"
-          EXISTING_COUNT="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" --jq "[.[].tag_name | select(test(\"^v${BASE_VERSION}-preview[.]${YEAR_2}[.][0-9]+$\"))] | length")"
-          NEXT_COUNT=$((EXISTING_COUNT + 1))
-          PREVIEW_VERSION="${BASE_VERSION}-preview.${YEAR_2}.${NEXT_COUNT}"
+          YEARLY_RUN_COUNT=1
+          LAST_VERSION="$(gh release view "$FIXED_PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body' 2>/dev/null | grep -Eo '0\.[0-9]{2}\.[0-9]+' | head -n 1 || true)"
+          if [[ "$LAST_VERSION" =~ ^0\.([0-9]{2})\.([0-9]+)$ ]]; then
+            LAST_YEAR="${BASH_REMATCH[1]}"
+            LAST_COUNT="${BASH_REMATCH[2]}"
+            if [ "$LAST_YEAR" = "$YEAR_2" ]; then
+              YEARLY_RUN_COUNT=$((LAST_COUNT + 1))
+            fi
+          fi
+
+          PREVIEW_VERSION="0.${YEAR_2}.${YEARLY_RUN_COUNT}"
 
           echo "should_build=$SHOULD_BUILD" >> "$GITHUB_OUTPUT"
           echo "preview_version=$PREVIEW_VERSION" >> "$GITHUB_OUTPUT"
-          echo "Preview version: $PREVIEW_VERSION (commits in last 24h on main: $COMMITS_24H)"
+          echo "Preview version: $PREVIEW_VERSION (commits in last 24h on main: $COMMITS_24H, yearly count: $YEARLY_RUN_COUNT)"
+
+      - name: Recreate fixed preview prerelease
+        if: steps.meta.outputs.should_build == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$FIXED_PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$FIXED_PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+          gh release create "$FIXED_PREVIEW_TAG" --repo "$GITHUB_REPOSITORY" --title "Preview Nightly Build" --notes "预览版发布页" --prerelease --target "$TARGET_BRANCH"
+          RELEASE_REST_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$FIXED_PREVIEW_TAG" --jq '.id')"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_REST_ID" -f draft=false -f prerelease=true >/dev/null
 
   preview-mac-arm64:
     needs: prepare
@@ -68,6 +92,7 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Install Node.js
@@ -84,19 +109,34 @@ jobs:
         run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
 
       - name: Build Frontend & Type Check
+        shell: bash
         run: |
           npx tsc
           npx vite build
 
-      - name: Package and Publish macOS arm64 preview
+      - name: Package macOS arm64 preview artifacts
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
         shell: bash
         run: |
           export ELECTRON_BUILDER_BINARIES_MIRROR="https://github.com/electron-userland/electron-builder-binaries/releases/download/"
           echo "Using ELECTRON_BUILDER_BINARIES_MIRROR=$ELECTRON_BUILDER_BINARIES_MIRROR"
-          npx electron-builder --mac dmg --arm64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview'
+          npx electron-builder --mac dmg --arm64 --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-arm64.${ext}'
+
+      - name: Upload macOS arm64 assets to fixed preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release files found in ./release"
+            exit 1
+          fi
+          gh release upload "$FIXED_PREVIEW_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   preview-linux:
     needs: prepare
@@ -106,6 +146,7 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Install Node.js
@@ -122,15 +163,32 @@ jobs:
         run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
 
       - name: Build Frontend & Type Check
+        shell: bash
         run: |
           npx tsc
           npx vite build
 
-      - name: Package and Publish Linux preview
+      - name: Package Linux preview artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          npx electron-builder --linux --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview'
+          npx electron-builder --linux --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-linux.${ext}'
+
+      - name: Upload Linux assets to fixed preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release files found in ./release"
+            exit 1
+          fi
+          gh release upload "$FIXED_PREVIEW_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   preview-win-x64:
     needs: prepare
@@ -140,6 +198,7 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Install Node.js
@@ -156,15 +215,32 @@ jobs:
         run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
 
       - name: Build Frontend & Type Check
+        shell: bash
         run: |
           npx tsc
           npx vite build
 
-      - name: Package and Publish Windows x64 preview
+      - name: Package Windows x64 preview artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          npx electron-builder --win nsis --x64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview' '--config.artifactName=${productName}-${version}-x64-Setup.${ext}'
+          npx electron-builder --win nsis --x64 --publish never '--config.publish.channel=preview' '--config.artifactName=${productName}-preview-x64-Setup.${ext}'
+
+      - name: Upload Windows x64 assets to fixed preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release files found in ./release"
+            exit 1
+          fi
+          gh release upload "$FIXED_PREVIEW_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   preview-win-arm64:
     needs: prepare
@@ -174,6 +250,7 @@ jobs:
       - name: Check out git repository
         uses: actions/checkout@v5
         with:
+          ref: ${{ env.TARGET_BRANCH }}
           fetch-depth: 0
 
       - name: Install Node.js
@@ -190,15 +267,32 @@ jobs:
         run: npm version "${{ needs.prepare.outputs.preview_version }}" --no-git-tag-version --allow-same-version
 
       - name: Build Frontend & Type Check
+        shell: bash
         run: |
           npx tsc
           npx vite build
 
-      - name: Package and Publish Windows arm64 preview
+      - name: Package Windows arm64 preview artifacts
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          npx electron-builder --win nsis --arm64 --publish always '--config.publish.releaseType=prerelease' '--config.publish.channel=preview-arm64' '--config.artifactName=${productName}-${version}-arm64-Setup.${ext}'
+          npx electron-builder --win nsis --arm64 --publish never '--config.publish.channel=preview-arm64' '--config.artifactName=${productName}-preview-arm64-Setup.${ext}'
+
+      - name: Upload Windows arm64 assets to fixed preview release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          assets=()
+          while IFS= read -r file; do
+            assets+=("$file")
+          done < <(find release -maxdepth 1 -type f | sort)
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "No release files found in ./release"
+            exit 1
+          fi
+          gh release upload "$FIXED_PREVIEW_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY" --clobber
 
   update-preview-release-notes:
     needs:
@@ -217,7 +311,8 @@ jobs:
         run: |
           set -euo pipefail
 
-          TAG="v${{ needs.prepare.outputs.preview_version }}"
+          TAG="$FIXED_PREVIEW_TAG"
+          CURRENT_PREVIEW_VERSION="${{ needs.prepare.outputs.preview_version }}"
           REPO="$GITHUB_REPOSITORY"
           RELEASE_PAGE="https://github.com/$REPO/releases/tag/$TAG"
 
@@ -259,20 +354,26 @@ jobs:
           ## Preview Nightly 说明
           - 该版本为 **预览版**，用于提前体验即将发布的功能与修复。
           - 可能包含尚未完全稳定的改动，不建议长期使用
+          - 当前版本号：\`$CURRENT_PREVIEW_VERSION\`
 
           ## 下载
-          - Windows x64: ${WINDOWS_URL:-$RELEASE_PAGE}
-          - Windows arm64: ${WINDOWS_ARM64_URL:-$RELEASE_PAGE}
-          - macOS（Apple Silicon）: ${MAC_URL:-$RELEASE_PAGE}
-          - Linux (.tar.gz): ${LINUX_TAR_URL:-$RELEASE_PAGE}
-          - Linux (.AppImage): ${LINUX_APPIMAGE_URL:-$RELEASE_PAGE}
+          - Windows x64: [点击下载](${WINDOWS_URL:-$RELEASE_PAGE})
+          - Windows arm64: [点击下载](${WINDOWS_ARM64_URL:-$RELEASE_PAGE})
+          - macOS（Apple Silicon）: [点击下载](${MAC_URL:-$RELEASE_PAGE})
+          - Linux (.tar.gz): [点击下载](${LINUX_TAR_URL:-$RELEASE_PAGE})
+          - Linux (.AppImage): [点击下载](${LINUX_APPIMAGE_URL:-$RELEASE_PAGE})
 
           ## macOS 安装提示
           - 如果被系统提示已损坏，你需要在终端执行以下命令去除隔离标记：
           - \`xattr -dr com.apple.quarantine "/Applications/WeFlow.app"\`
           - 执行后重新打开 WeFlow。
 
-          > 如某个平台链接暂未生成，请前往发布页查看最新资源：$RELEASE_PAGE
+          > 如某个平台链接暂未生成，请前往[发布页]($RELEASE_PAGE)查看最新资源
           EOF
 
-          gh release edit "$TAG" --repo "$REPO" --notes-file preview_release_notes.md
+          RELEASE_REST_ID="$(gh api "repos/$REPO/releases/tags/$TAG" --jq '.id')"
+          jq -n --rawfile body preview_release_notes.md \
+            '{name:"Preview Nightly Build", body:$body, draft:false, prerelease:true}' \
+            > release_update_payload.json
+          gh api --method PATCH "repos/$REPO/releases/$RELEASE_REST_ID" --input release_update_payload.json >/dev/null
+          gh release view "$TAG" --repo "$REPO" --json isDraft,isPrerelease,url

@@ -15,11 +15,12 @@ import {
 import { Avatar } from '../components/Avatar'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'notification' | 'database' | 'models' | 'cache' | 'api' | 'updates' | 'security' | 'about' | 'analytics'
+type SettingsTab = 'appearance' | 'notification' | 'antiRevoke' | 'database' | 'models' | 'cache' | 'api' | 'updates' | 'security' | 'about' | 'analytics'
 
 const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'notification', label: '通知', icon: Bell },
+  { id: 'antiRevoke', label: '防撤回', icon: RotateCcw },
   { id: 'database', label: '数据库连接', icon: Database },
   { id: 'models', label: '模型管理', icon: Mic },
   { id: 'cache', label: '缓存', icon: HardDrive },
@@ -70,6 +71,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     setShowUpdateDialog,
   } = useAppStore()
 
+  const chatSessions = useChatStore((state) => state.sessions)
+  const setChatSessions = useChatStore((state) => state.setSessions)
   const resetChatStore = useChatStore((state) => state.reset)
   const { currentTheme, themeMode, setTheme, setThemeMode } = useThemeStore()
   const [systemDark, setSystemDark] = useState(() => window.matchMedia('(prefers-color-scheme: dark)').matches)
@@ -138,6 +141,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [notificationPosition, setNotificationPosition] = useState<'top-right' | 'top-left' | 'bottom-right' | 'bottom-left' | 'top-center'>('top-right')
   const [notificationFilterMode, setNotificationFilterMode] = useState<'all' | 'whitelist' | 'blacklist'>('all')
   const [notificationFilterList, setNotificationFilterList] = useState<string[]>([])
+  const [launchAtStartup, setLaunchAtStartup] = useState(false)
+  const [launchAtStartupSupported, setLaunchAtStartupSupported] = useState(isWindows || isMac)
+  const [launchAtStartupReason, setLaunchAtStartupReason] = useState('')
   const [windowCloseBehavior, setWindowCloseBehavior] = useState<configService.WindowCloseBehavior>('ask')
   const [quoteLayout, setQuoteLayout] = useState<configService.QuoteLayout>('quote-top')
   const [updateChannel, setUpdateChannel] = useState<configService.UpdateChannel>('stable')
@@ -162,6 +168,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isFetchingDbKey, setIsFetchingDbKey] = useState(false)
   const [isFetchingImageKey, setIsFetchingImageKey] = useState(false)
   const [isCheckingUpdate, setIsCheckingUpdate] = useState(false)
+  const [isUpdatingLaunchAtStartup, setIsUpdatingLaunchAtStartup] = useState(false)
   const [appVersion, setAppVersion] = useState('')
   const [message, setMessage] = useState<{ text: string; success: boolean } | null>(null)
   const [showDecryptKey, setShowDecryptKey] = useState(false)
@@ -196,6 +203,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isTogglingApi, setIsTogglingApi] = useState(false)
   const [showApiWarning, setShowApiWarning] = useState(false)
   const [messagePushEnabled, setMessagePushEnabled] = useState(false)
+  const [antiRevokeSearchKeyword, setAntiRevokeSearchKeyword] = useState('')
+  const [antiRevokeSelectedIds, setAntiRevokeSelectedIds] = useState<Set<string>>(new Set())
+  const [antiRevokeStatusMap, setAntiRevokeStatusMap] = useState<Record<string, { installed?: boolean; loading?: boolean; error?: string }>>({})
+  const [isAntiRevokeRefreshing, setIsAntiRevokeRefreshing] = useState(false)
+  const [isAntiRevokeInstalling, setIsAntiRevokeInstalling] = useState(false)
+  const [isAntiRevokeUninstalling, setIsAntiRevokeUninstalling] = useState(false)
+  const [antiRevokeSummary, setAntiRevokeSummary] = useState<{ action: 'refresh' | 'install' | 'uninstall'; success: number; failed: number } | null>(null)
 
   const isClearingCache = isClearingAnalyticsCache || isClearingImageCache || isClearingAllCache
 
@@ -337,6 +351,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedNotificationFilterMode = await configService.getNotificationFilterMode()
       const savedNotificationFilterList = await configService.getNotificationFilterList()
       const savedMessagePushEnabled = await configService.getMessagePushEnabled()
+      const savedLaunchAtStartupStatus = await window.electronAPI.app.getLaunchAtStartupStatus()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
       const savedQuoteLayout = await configService.getQuoteLayout()
       const savedUpdateChannel = await configService.getUpdateChannel()
@@ -386,15 +401,18 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setNotificationFilterMode(savedNotificationFilterMode)
       setNotificationFilterList(savedNotificationFilterList)
       setMessagePushEnabled(savedMessagePushEnabled)
+      setLaunchAtStartup(savedLaunchAtStartupStatus.enabled)
+      setLaunchAtStartupSupported(savedLaunchAtStartupStatus.supported)
+      setLaunchAtStartupReason(savedLaunchAtStartupStatus.reason || '')
       setWindowCloseBehavior(savedWindowCloseBehavior)
       setQuoteLayout(savedQuoteLayout)
       if (savedUpdateChannel) {
         setUpdateChannel(savedUpdateChannel)
       } else {
         const currentVersion = await window.electronAPI.app.getVersion()
-        if (/-preview\.\d+\.\d+$/i.test(currentVersion)) {
+        if (/^0\.\d{2}\.\d+$/i.test(currentVersion) || /-preview\.\d+\.\d+$/i.test(currentVersion)) {
           setUpdateChannel('preview')
-        } else if (/-dev\.\d+\.\d+\.\d+$/i.test(currentVersion) || /(alpha|beta|rc)/i.test(currentVersion)) {
+        } else if (/^\d{2}\.\d{1,2}\.\d{1,2}$/i.test(currentVersion) || /-dev\.\d+\.\d+\.\d+$/i.test(currentVersion) || /(alpha|beta|rc)/i.test(currentVersion)) {
           setUpdateChannel('dev')
         } else {
           setUpdateChannel('stable')
@@ -427,6 +445,29 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   }
 
 
+
+  const handleLaunchAtStartupChange = async (enabled: boolean) => {
+    if (isUpdatingLaunchAtStartup) return
+
+    try {
+      setIsUpdatingLaunchAtStartup(true)
+      const result = await window.electronAPI.app.setLaunchAtStartup(enabled)
+      setLaunchAtStartup(result.enabled)
+      setLaunchAtStartupSupported(result.supported)
+      setLaunchAtStartupReason(result.reason || '')
+
+      if (result.success) {
+        showMessage(enabled ? '已开启开机自启动' : '已关闭开机自启动', true)
+        return
+      }
+
+      showMessage(result.error || result.reason || '设置开机自启动失败', false)
+    } catch (e: any) {
+      showMessage(`设置开机自启动失败: ${e?.message || String(e)}`, false)
+    } finally {
+      setIsUpdatingLaunchAtStartup(false)
+    }
+  }
 
   const refreshWhisperStatus = async (modelDirValue = whisperModelDir) => {
     try {
@@ -554,6 +595,248 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       onClose()
     }, 200)
   }
+
+  const normalizeSessionIds = (sessionIds: string[]): string[] =>
+    Array.from(new Set((sessionIds || []).map((id) => String(id || '').trim()).filter(Boolean)))
+
+  const getCurrentAntiRevokeSessionIds = (): string[] =>
+    normalizeSessionIds(chatSessions.map((session) => session.username))
+
+  const ensureAntiRevokeSessionsLoaded = async (): Promise<string[]> => {
+    const current = getCurrentAntiRevokeSessionIds()
+    if (current.length > 0) return current
+    const sessionsResult = await window.electronAPI.chat.getSessions()
+    if (!sessionsResult.success || !sessionsResult.sessions) {
+      throw new Error(sessionsResult.error || '加载会话失败')
+    }
+    setChatSessions(sessionsResult.sessions)
+    return normalizeSessionIds(sessionsResult.sessions.map((session) => session.username))
+  }
+
+  const markAntiRevokeRowsLoading = (sessionIds: string[]) => {
+    setAntiRevokeStatusMap((prev) => {
+      const next = { ...prev }
+      for (const sessionId of sessionIds) {
+        next[sessionId] = {
+          ...(next[sessionId] || {}),
+          loading: true,
+          error: undefined
+        }
+      }
+      return next
+    })
+  }
+
+  const handleRefreshAntiRevokeStatus = async (sessionIds?: string[]) => {
+    if (isAntiRevokeRefreshing || isAntiRevokeInstalling || isAntiRevokeUninstalling) return
+    setAntiRevokeSummary(null)
+    setIsAntiRevokeRefreshing(true)
+    try {
+      const targetIds = normalizeSessionIds(
+        sessionIds && sessionIds.length > 0
+          ? sessionIds
+          : await ensureAntiRevokeSessionsLoaded()
+      )
+      if (targetIds.length === 0) {
+        setAntiRevokeStatusMap({})
+        showMessage('暂无可检查的会话', true)
+        return
+      }
+      markAntiRevokeRowsLoading(targetIds)
+
+      const result = await window.electronAPI.chat.checkAntiRevokeTriggers(targetIds)
+      if (!result.success || !result.rows) {
+        const errorText = result.error || '防撤回状态检查失败'
+        setAntiRevokeStatusMap((prev) => {
+          const next = { ...prev }
+          for (const sessionId of targetIds) {
+            next[sessionId] = {
+              ...(next[sessionId] || {}),
+              loading: false,
+              error: errorText
+            }
+          }
+          return next
+        })
+        showMessage(errorText, false)
+        return
+      }
+
+      const rowMap = new Map<string, { sessionId: string; success: boolean; installed?: boolean; error?: string }>()
+      for (const row of result.rows || []) {
+        const sessionId = String(row.sessionId || '').trim()
+        if (!sessionId) continue
+        rowMap.set(sessionId, row)
+      }
+      const mergedRows = targetIds.map((sessionId) => (
+        rowMap.get(sessionId) || { sessionId, success: false, error: '状态查询未返回结果' }
+      ))
+      const successCount = mergedRows.filter((row) => row.success).length
+      const failedCount = mergedRows.length - successCount
+      setAntiRevokeStatusMap((prev) => {
+        const next = { ...prev }
+        for (const row of mergedRows) {
+          const sessionId = String(row.sessionId || '').trim()
+          if (!sessionId) continue
+          next[sessionId] = {
+            installed: row.installed === true,
+            loading: false,
+            error: row.success ? undefined : (row.error || '状态查询失败')
+          }
+        }
+        return next
+      })
+      setAntiRevokeSummary({ action: 'refresh', success: successCount, failed: failedCount })
+      showMessage(`状态刷新完成：成功 ${successCount}，失败 ${failedCount}`, failedCount === 0)
+    } catch (e: any) {
+      showMessage(`防撤回状态刷新失败: ${e?.message || String(e)}`, false)
+    } finally {
+      setIsAntiRevokeRefreshing(false)
+    }
+  }
+
+  const handleInstallAntiRevokeTriggers = async () => {
+    if (isAntiRevokeRefreshing || isAntiRevokeInstalling || isAntiRevokeUninstalling) return
+    const sessionIds = normalizeSessionIds(Array.from(antiRevokeSelectedIds))
+    if (sessionIds.length === 0) {
+      showMessage('请先选择至少一个会话', false)
+      return
+    }
+    setAntiRevokeSummary(null)
+    setIsAntiRevokeInstalling(true)
+    try {
+      markAntiRevokeRowsLoading(sessionIds)
+      const result = await window.electronAPI.chat.installAntiRevokeTriggers(sessionIds)
+      if (!result.success || !result.rows) {
+        const errorText = result.error || '批量安装失败'
+        setAntiRevokeStatusMap((prev) => {
+          const next = { ...prev }
+          for (const sessionId of sessionIds) {
+            next[sessionId] = {
+              ...(next[sessionId] || {}),
+              loading: false,
+              error: errorText
+            }
+          }
+          return next
+        })
+        showMessage(errorText, false)
+        return
+      }
+
+      const rowMap = new Map<string, { sessionId: string; success: boolean; alreadyInstalled?: boolean; error?: string }>()
+      for (const row of result.rows || []) {
+        const sessionId = String(row.sessionId || '').trim()
+        if (!sessionId) continue
+        rowMap.set(sessionId, row)
+      }
+      const mergedRows = sessionIds.map((sessionId) => (
+        rowMap.get(sessionId) || { sessionId, success: false, error: '安装未返回结果' }
+      ))
+      const successCount = mergedRows.filter((row) => row.success).length
+      const failedCount = mergedRows.length - successCount
+      setAntiRevokeStatusMap((prev) => {
+        const next = { ...prev }
+        for (const row of mergedRows) {
+          const sessionId = String(row.sessionId || '').trim()
+          if (!sessionId) continue
+          next[sessionId] = {
+            installed: row.success ? true : next[sessionId]?.installed,
+            loading: false,
+            error: row.success ? undefined : (row.error || '安装失败')
+          }
+        }
+        return next
+      })
+      setAntiRevokeSummary({ action: 'install', success: successCount, failed: failedCount })
+      showMessage(`批量安装完成：成功 ${successCount}，失败 ${failedCount}`, failedCount === 0)
+    } catch (e: any) {
+      showMessage(`批量安装失败: ${e?.message || String(e)}`, false)
+    } finally {
+      setIsAntiRevokeInstalling(false)
+    }
+  }
+
+  const handleUninstallAntiRevokeTriggers = async () => {
+    if (isAntiRevokeRefreshing || isAntiRevokeInstalling || isAntiRevokeUninstalling) return
+    const sessionIds = normalizeSessionIds(Array.from(antiRevokeSelectedIds))
+    if (sessionIds.length === 0) {
+      showMessage('请先选择至少一个会话', false)
+      return
+    }
+    setAntiRevokeSummary(null)
+    setIsAntiRevokeUninstalling(true)
+    try {
+      markAntiRevokeRowsLoading(sessionIds)
+      const result = await window.electronAPI.chat.uninstallAntiRevokeTriggers(sessionIds)
+      if (!result.success || !result.rows) {
+        const errorText = result.error || '批量卸载失败'
+        setAntiRevokeStatusMap((prev) => {
+          const next = { ...prev }
+          for (const sessionId of sessionIds) {
+            next[sessionId] = {
+              ...(next[sessionId] || {}),
+              loading: false,
+              error: errorText
+            }
+          }
+          return next
+        })
+        showMessage(errorText, false)
+        return
+      }
+
+      const rowMap = new Map<string, { sessionId: string; success: boolean; error?: string }>()
+      for (const row of result.rows || []) {
+        const sessionId = String(row.sessionId || '').trim()
+        if (!sessionId) continue
+        rowMap.set(sessionId, row)
+      }
+      const mergedRows = sessionIds.map((sessionId) => (
+        rowMap.get(sessionId) || { sessionId, success: false, error: '卸载未返回结果' }
+      ))
+      const successCount = mergedRows.filter((row) => row.success).length
+      const failedCount = mergedRows.length - successCount
+      setAntiRevokeStatusMap((prev) => {
+        const next = { ...prev }
+        for (const row of mergedRows) {
+          const sessionId = String(row.sessionId || '').trim()
+          if (!sessionId) continue
+          next[sessionId] = {
+            installed: row.success ? false : next[sessionId]?.installed,
+            loading: false,
+            error: row.success ? undefined : (row.error || '卸载失败')
+          }
+        }
+        return next
+      })
+      setAntiRevokeSummary({ action: 'uninstall', success: successCount, failed: failedCount })
+      showMessage(`批量卸载完成：成功 ${successCount}，失败 ${failedCount}`, failedCount === 0)
+    } catch (e: any) {
+      showMessage(`批量卸载失败: ${e?.message || String(e)}`, false)
+    } finally {
+      setIsAntiRevokeUninstalling(false)
+    }
+  }
+
+  useEffect(() => {
+    if (activeTab !== 'antiRevoke') return
+    let canceled = false
+    ;(async () => {
+      try {
+        const sessionIds = await ensureAntiRevokeSessionsLoaded()
+        if (canceled) return
+        await handleRefreshAntiRevokeStatus(sessionIds)
+      } catch (e: any) {
+        if (!canceled) {
+          showMessage(`加载防撤回会话失败: ${e?.message || String(e)}`, false)
+        }
+      }
+    })()
+    return () => {
+      canceled = true
+    }
+  }, [activeTab])
 
   type WxidKeys = {
     decryptKey: string
@@ -1200,6 +1483,39 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="divider" />
 
       <div className="form-group">
+        <label>开机自启动</label>
+        <span className="form-hint">
+          {launchAtStartupSupported
+            ? '开启后，登录系统时会自动启动 WeFlow。'
+            : launchAtStartupReason || '当前环境暂不支持开机自启动。'}
+        </span>
+        <div className="log-toggle-line">
+          <span className="log-status">
+            {isUpdatingLaunchAtStartup
+              ? '保存中...'
+              : launchAtStartupSupported
+                ? (launchAtStartup ? '已开启' : '已关闭')
+                : '当前不可用'}
+          </span>
+          <label className="switch" htmlFor="launch-at-startup-toggle">
+            <input
+              id="launch-at-startup-toggle"
+              className="switch-input"
+              type="checkbox"
+              checked={launchAtStartup}
+              disabled={!launchAtStartupSupported || isUpdatingLaunchAtStartup}
+              onChange={(e) => {
+                void handleLaunchAtStartupChange(e.target.checked)
+              }}
+            />
+            <span className="switch-slider" />
+          </label>
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      <div className="form-group">
         <label>关闭主窗口时</label>
         <span className="form-hint">设置点击关闭按钮后的默认行为；选择“每次询问”时会弹出关闭确认。</span>
         <div className="custom-select">
@@ -1255,11 +1571,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   )
 
   const renderNotificationTab = () => {
-    const { sessions } = useChatStore.getState()
-
     // 获取已过滤会话的信息
     const getSessionInfo = (username: string) => {
-      const session = sessions.find(s => s.username === username)
+      const session = chatSessions.find(s => s.username === username)
       return {
         displayName: session?.displayName || username,
         avatarUrl: session?.avatarUrl || ''
@@ -1284,7 +1598,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     }
 
     // 过滤掉已在列表中的会话，并根据搜索关键字过滤
-    const availableSessions = sessions.filter(s => {
+    const availableSessions = chatSessions.filter(s => {
       if (notificationFilterList.includes(s.username)) return false
       if (filterSearchKeyword) {
         const keyword = filterSearchKeyword.toLowerCase()
@@ -1496,6 +1810,199 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </div>
           </div>
         )}
+      </div>
+    )
+  }
+
+  const renderAntiRevokeTab = () => {
+    const sortedSessions = [...chatSessions].sort((a, b) => (b.sortTimestamp || 0) - (a.sortTimestamp || 0))
+    const keyword = antiRevokeSearchKeyword.trim().toLowerCase()
+    const filteredSessions = sortedSessions.filter((session) => {
+      if (!keyword) return true
+      const displayName = String(session.displayName || '').toLowerCase()
+      const username = String(session.username || '').toLowerCase()
+      return displayName.includes(keyword) || username.includes(keyword)
+    })
+    const filteredSessionIds = filteredSessions.map((session) => session.username)
+    const selectedCount = antiRevokeSelectedIds.size
+    const selectedInFilteredCount = filteredSessionIds.filter((sessionId) => antiRevokeSelectedIds.has(sessionId)).length
+    const allFilteredSelected = filteredSessionIds.length > 0 && selectedInFilteredCount === filteredSessionIds.length
+    const busy = isAntiRevokeRefreshing || isAntiRevokeInstalling || isAntiRevokeUninstalling
+    const statusStats = filteredSessions.reduce(
+      (acc, session) => {
+        const rowState = antiRevokeStatusMap[session.username]
+        if (rowState?.error) acc.failed += 1
+        else if (rowState?.installed === true) acc.installed += 1
+        else if (rowState?.installed === false) acc.notInstalled += 1
+        return acc
+      },
+      { installed: 0, notInstalled: 0, failed: 0 }
+    )
+
+    const toggleSelected = (sessionId: string) => {
+      setAntiRevokeSelectedIds((prev) => {
+        const next = new Set(prev)
+        if (next.has(sessionId)) next.delete(sessionId)
+        else next.add(sessionId)
+        return next
+      })
+    }
+
+    const selectAllFiltered = () => {
+      if (filteredSessionIds.length === 0) return
+      setAntiRevokeSelectedIds((prev) => {
+        const next = new Set(prev)
+        for (const sessionId of filteredSessionIds) {
+          next.add(sessionId)
+        }
+        return next
+      })
+    }
+
+    const clearSelection = () => {
+      setAntiRevokeSelectedIds(new Set())
+    }
+
+    return (
+      <div className="tab-content anti-revoke-tab">
+        <div className="anti-revoke-hero">
+          <div className="anti-revoke-hero-main">
+            <h3>防撤回</h3>
+            <p>你可以根据会话进行防撤回部署，安装后无需保持 WeFlow 运行即可实现防撤回</p>
+          </div>
+          <div className="anti-revoke-metrics">
+            <div className="anti-revoke-metric is-total">
+              <span className="label">筛选会话</span>
+              <span className="value">{filteredSessionIds.length}</span>
+            </div>
+            <div className="anti-revoke-metric is-installed">
+              <span className="label">已安装</span>
+              <span className="value">{statusStats.installed}</span>
+            </div>
+            <div className="anti-revoke-metric is-pending">
+              <span className="label">未安装</span>
+              <span className="value">{statusStats.notInstalled}</span>
+            </div>
+            <div className="anti-revoke-metric is-error">
+              <span className="label">异常</span>
+              <span className="value">{statusStats.failed}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="anti-revoke-control-card">
+          <div className="anti-revoke-toolbar">
+            <div className="filter-search-box anti-revoke-search">
+              <Search size={14} />
+              <input
+                type="text"
+                placeholder="搜索会话..."
+                value={antiRevokeSearchKeyword}
+                onChange={(e) => setAntiRevokeSearchKeyword(e.target.value)}
+              />
+            </div>
+            <div className="anti-revoke-toolbar-actions">
+              <div className="anti-revoke-btn-group">
+                <button className="btn btn-secondary btn-sm" onClick={() => void handleRefreshAntiRevokeStatus()} disabled={busy}>
+                  <RefreshCw size={14} /> {isAntiRevokeRefreshing ? '刷新中...' : '刷新状态'}
+                </button>
+              </div>
+              <div className="anti-revoke-btn-group">
+                <button className="btn btn-secondary btn-sm" onClick={selectAllFiltered} disabled={busy || filteredSessionIds.length === 0 || allFilteredSelected}>
+                  全选
+                </button>
+                <button className="btn btn-secondary btn-sm" onClick={clearSelection} disabled={busy || selectedCount === 0}>
+                  清空选择
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <div className="anti-revoke-batch-actions">
+            <div className="anti-revoke-btn-group anti-revoke-batch-btns">
+              <button className="btn btn-primary btn-sm" onClick={() => void handleInstallAntiRevokeTriggers()} disabled={busy || selectedCount === 0}>
+                {isAntiRevokeInstalling ? '安装中...' : '批量安装'}
+              </button>
+              <button className="btn btn-secondary btn-sm" onClick={() => void handleUninstallAntiRevokeTriggers()} disabled={busy || selectedCount === 0}>
+                {isAntiRevokeUninstalling ? '卸载中...' : '批量卸载'}
+              </button>
+            </div>
+            <div className="anti-revoke-selected-count">
+              <span>已选 <strong>{selectedCount}</strong> 个会话</span>
+              <span>筛选命中 <strong>{selectedInFilteredCount}</strong> / {filteredSessionIds.length}</span>
+            </div>
+          </div>
+        </div>
+
+        {antiRevokeSummary && (
+          <div className={`anti-revoke-summary ${antiRevokeSummary.failed > 0 ? 'error' : 'success'}`}>
+            {antiRevokeSummary.action === 'refresh' ? '刷新' : antiRevokeSummary.action === 'install' ? '安装' : '卸载'}
+            完成：成功 {antiRevokeSummary.success}，失败 {antiRevokeSummary.failed}
+          </div>
+        )}
+
+        <div className="anti-revoke-list">
+          {filteredSessions.length === 0 ? (
+            <div className="anti-revoke-empty">{antiRevokeSearchKeyword ? '没有匹配的会话' : '暂无会话可配置'}</div>
+          ) : (
+            <>
+              <div className="anti-revoke-list-header">
+                <span>会话（{filteredSessions.length}）</span>
+                <span>状态</span>
+              </div>
+              {filteredSessions.map((session) => {
+                const rowState = antiRevokeStatusMap[session.username]
+                let statusClass = 'unknown'
+                let statusLabel = '未检查'
+                if (rowState?.loading) {
+                  statusClass = 'checking'
+                  statusLabel = '检查中'
+                } else if (rowState?.error) {
+                  statusClass = 'error'
+                  statusLabel = '失败'
+                } else if (rowState?.installed === true) {
+                  statusClass = 'installed'
+                  statusLabel = '已安装'
+                } else if (rowState?.installed === false) {
+                  statusClass = 'not-installed'
+                  statusLabel = '未安装'
+                }
+                return (
+                  <div key={session.username} className={`anti-revoke-row ${antiRevokeSelectedIds.has(session.username) ? 'selected' : ''}`}>
+                    <label className="anti-revoke-row-main">
+                      <span className="anti-revoke-check">
+                        <input
+                          type="checkbox"
+                          checked={antiRevokeSelectedIds.has(session.username)}
+                          onChange={() => toggleSelected(session.username)}
+                          disabled={busy}
+                        />
+                        <span className="check-indicator" aria-hidden="true">
+                          <Check size={12} />
+                        </span>
+                      </span>
+                      <Avatar
+                        src={session.avatarUrl}
+                        name={session.displayName || session.username}
+                        size={30}
+                      />
+                      <div className="anti-revoke-row-text">
+                        <span className="name">{session.displayName || session.username}</span>
+                      </div>
+                    </label>
+                    <div className="anti-revoke-row-status">
+                      <span className={`status-badge ${statusClass}`}>
+                        <i className="status-dot" aria-hidden="true" />
+                        {statusLabel}
+                      </span>
+                      {rowState?.error && <span className="status-error">{rowState.error}</span>}
+                    </div>
+                  </div>
+                )
+              })}
+            </>
+          )}
+        </div>
       </div>
     )
   }
@@ -2444,7 +2951,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       <div className="about-footer">
         <p className="about-desc">微信聊天记录分析工具</p>
         <div className="about-links">
-          <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://github.com/hicccc77/WeFlow') }}>官网</a>
+          <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://weflow.top') }}>官网</a>
+          <span>·</span>
+          <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://github.com/hicccc77/WeFlow') }}>GitHub 仓库</a>
           <span>·</span>
           <a href="#" onClick={(e) => { e.preventDefault(); window.electronAPI.shell.openExternal('https://chatlab.fun') }}>ChatLab</a>
           <span>·</span>
@@ -2621,6 +3130,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
           <div className="settings-body">
             {activeTab === 'appearance' && renderAppearanceTab()}
             {activeTab === 'notification' && renderNotificationTab()}
+            {activeTab === 'antiRevoke' && renderAntiRevokeTab()}
             {activeTab === 'database' && renderDatabaseTab()}
             {activeTab === 'models' && renderModelsTab()}
             {activeTab === 'cache' && renderCacheTab()}
