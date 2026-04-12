@@ -555,7 +555,19 @@ export class KeyServiceMac {
     if (code === 'HOOK_TARGET_ONLY') {
       return `已定位到目标函数地址（${detail || ''}），但当前原生 C++ 仅完成定位，尚未完成远程 Hook 回调取 key 流程。`
     }
-    if (code === 'SCAN_FAILED') return '内存扫描失败'
+    if (code === 'SCAN_FAILED') {
+      const normalizedDetail = (detail || '').trim()
+      if (!normalizedDetail) {
+        return '内存扫描失败：未匹配到可用特征。可能是当前微信版本更新导致，请升级 WeFlow 后重试。'
+      }
+      if (normalizedDetail.includes('Sink pattern not found')) {
+        return '内存扫描失败：未匹配到目标函数特征，可使用微信 4.1.8.100 版本尝试。'
+      }
+      if (normalizedDetail.includes('No suitable module found')) {
+        return '内存扫描失败：未找到可扫描的微信主模块。请确认微信已完整启动并保持前台，再重试。'
+      }
+      return `内存扫描失败：${normalizedDetail}`
+    }
     return '未知错误'
   }
 

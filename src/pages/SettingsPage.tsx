@@ -6,6 +6,7 @@ import { useThemeStore, themes } from '../stores/themeStore'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
+import type { ContactInfo } from '../types/models'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -16,9 +17,23 @@ import {
 import { Avatar } from '../components/Avatar'
 import './SettingsPage.scss'
 
-type SettingsTab = 'appearance' | 'notification' | 'antiRevoke' | 'database' | 'models' | 'cache' | 'api' | 'updates' | 'security' | 'about' | 'analytics' | 'insight'
+type SettingsTab =
+  | 'appearance'
+  | 'notification'
+  | 'antiRevoke'
+  | 'database'
+  | 'models'
+  | 'cache'
+  | 'api'
+  | 'updates'
+  | 'security'
+  | 'about'
+  | 'analytics'
+  | 'aiCommon'
+  | 'insight'
+  | 'aiFootprint'
 
-const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
+const tabs: { id: Exclude<SettingsTab, 'insight' | 'aiFootprint'>; label: string; icon: React.ElementType }[] = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'notification', label: '通知', icon: Bell },
   { id: 'antiRevoke', label: '防撤回', icon: RotateCcw },
@@ -27,10 +42,15 @@ const tabs: { id: SettingsTab; label: string; icon: React.ElementType }[] = [
   { id: 'cache', label: '缓存', icon: HardDrive },
   { id: 'api', label: 'API 服务', icon: Globe },
   { id: 'analytics', label: '分析', icon: BarChart2 },
-  { id: 'insight', label: 'AI 见解', icon: Sparkles },
   { id: 'security', label: '安全', icon: ShieldCheck },
   { id: 'updates', label: '版本更新', icon: RefreshCw },
   { id: 'about', label: '关于', icon: Info }
+]
+
+const aiTabs: Array<{ id: Extract<SettingsTab, 'aiCommon' | 'insight' | 'aiFootprint'>; label: string }> = [
+  { id: 'aiCommon', label: 'AI 通用' },
+  { id: 'insight', label: 'AI 见解' },
+  { id: 'aiFootprint', label: 'AI 足迹' }
 ]
 
 const isMac = navigator.userAgent.toLowerCase().includes('mac')
@@ -51,6 +71,25 @@ interface WxidOption {
   nickname?: string
   avatarUrl?: string
 }
+
+type SessionFilterType = configService.MessagePushSessionType
+type SessionFilterTypeValue = 'all' | SessionFilterType
+type SessionFilterMode = 'all' | 'whitelist' | 'blacklist'
+
+interface SessionFilterOption {
+  username: string
+  displayName: string
+  avatarUrl?: string
+  type: SessionFilterType
+}
+
+const sessionFilterTypeOptions: Array<{ value: SessionFilterTypeValue; label: string }> = [
+  { value: 'all', label: '全部' },
+  { value: 'private', label: '私聊' },
+  { value: 'group', label: '群聊' },
+  { value: 'official', label: '订阅号/服务号' },
+  { value: 'other', label: '其他/非好友' }
+]
 
 interface SettingsPageProps {
   onClose?: () => void
@@ -88,6 +127,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const clearAnalyticsStoreCache = useAnalyticsStore((state) => state.clearCache)
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('appearance')
+  const [aiGroupExpanded, setAiGroupExpanded] = useState(false)
   const [decryptKey, setDecryptKey] = useState('')
   const [imageXorKey, setImageXorKey] = useState('')
   const [imageAesKey, setImageAesKey] = useState('')
@@ -150,6 +190,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [quoteLayout, setQuoteLayout] = useState<configService.QuoteLayout>('quote-top')
   const [updateChannel, setUpdateChannel] = useState<configService.UpdateChannel>('stable')
   const [filterSearchKeyword, setFilterSearchKeyword] = useState('')
+  const [notificationTypeFilter, setNotificationTypeFilter] = useState<SessionFilterTypeValue>('all')
   const [filterModeDropdownOpen, setFilterModeDropdownOpen] = useState(false)
   const [positionDropdownOpen, setPositionDropdownOpen] = useState(false)
   const [closeBehaviorDropdownOpen, setCloseBehaviorDropdownOpen] = useState(false)
@@ -205,6 +246,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isTogglingApi, setIsTogglingApi] = useState(false)
   const [showApiWarning, setShowApiWarning] = useState(false)
   const [messagePushEnabled, setMessagePushEnabled] = useState(false)
+  const [messagePushFilterMode, setMessagePushFilterMode] = useState<configService.MessagePushFilterMode>('all')
+  const [messagePushFilterList, setMessagePushFilterList] = useState<string[]>([])
+  const [messagePushFilterDropdownOpen, setMessagePushFilterDropdownOpen] = useState(false)
+  const [messagePushFilterSearchKeyword, setMessagePushFilterSearchKeyword] = useState('')
+  const [messagePushTypeFilter, setMessagePushTypeFilter] = useState<SessionFilterTypeValue>('all')
+  const [messagePushContactOptions, setMessagePushContactOptions] = useState<ContactInfo[]>([])
   const [antiRevokeSearchKeyword, setAntiRevokeSearchKeyword] = useState('')
   const [antiRevokeSelectedIds, setAntiRevokeSelectedIds] = useState<Set<string>>(new Set())
   const [antiRevokeStatusMap, setAntiRevokeStatusMap] = useState<Record<string, { installed?: boolean; loading?: boolean; error?: string }>>({})
@@ -217,9 +264,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
   // AI 见解 state
   const [aiInsightEnabled, setAiInsightEnabled] = useState(false)
-  const [aiInsightApiBaseUrl, setAiInsightApiBaseUrl] = useState('')
-  const [aiInsightApiKey, setAiInsightApiKey] = useState('')
-  const [aiInsightApiModel, setAiInsightApiModel] = useState('gpt-4o-mini')
+  const [aiModelApiBaseUrl, setAiModelApiBaseUrl] = useState('')
+  const [aiModelApiKey, setAiModelApiKey] = useState('')
+  const [aiModelApiModel, setAiModelApiModel] = useState('gpt-4o-mini')
   const [aiInsightSilenceDays, setAiInsightSilenceDays] = useState(3)
   const [aiInsightAllowContext, setAiInsightAllowContext] = useState(false)
   const [isTestingInsight, setIsTestingInsight] = useState(false)
@@ -237,6 +284,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [aiInsightTelegramEnabled, setAiInsightTelegramEnabled] = useState(false)
   const [aiInsightTelegramToken, setAiInsightTelegramToken] = useState('')
   const [aiInsightTelegramChatIds, setAiInsightTelegramChatIds] = useState('')
+  const [aiFootprintEnabled, setAiFootprintEnabled] = useState(false)
+  const [aiFootprintSystemPrompt, setAiFootprintSystemPrompt] = useState('')
 
   // 检查 Hello 可用性
   useEffect(() => {
@@ -275,6 +324,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     if (!initialTab) return
     setActiveTab(initialTab)
   }, [location.state])
+
+  useEffect(() => {
+    if (activeTab === 'aiCommon' || activeTab === 'insight' || activeTab === 'aiFootprint') {
+      setAiGroupExpanded(true)
+    }
+  }, [activeTab])
 
   useEffect(() => {
     if (!onClose) return
@@ -328,15 +383,16 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         setFilterModeDropdownOpen(false)
         setPositionDropdownOpen(false)
         setCloseBehaviorDropdownOpen(false)
+        setMessagePushFilterDropdownOpen(false)
       }
     }
-    if (filterModeDropdownOpen || positionDropdownOpen || closeBehaviorDropdownOpen) {
+    if (filterModeDropdownOpen || positionDropdownOpen || closeBehaviorDropdownOpen || messagePushFilterDropdownOpen) {
       document.addEventListener('click', handleClickOutside)
     }
     return () => {
       document.removeEventListener('click', handleClickOutside)
     }
-  }, [closeBehaviorDropdownOpen, filterModeDropdownOpen, positionDropdownOpen])
+  }, [closeBehaviorDropdownOpen, filterModeDropdownOpen, messagePushFilterDropdownOpen, positionDropdownOpen])
 
 
   const loadConfig = async () => {
@@ -359,6 +415,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedNotificationFilterMode = await configService.getNotificationFilterMode()
       const savedNotificationFilterList = await configService.getNotificationFilterList()
       const savedMessagePushEnabled = await configService.getMessagePushEnabled()
+      const savedMessagePushFilterMode = await configService.getMessagePushFilterMode()
+      const savedMessagePushFilterList = await configService.getMessagePushFilterList()
+      const contactsResult = await window.electronAPI.chat.getContacts({ lite: true })
       const savedLaunchAtStartupStatus = await window.electronAPI.app.getLaunchAtStartupStatus()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
       const savedQuoteLayout = await configService.getQuoteLayout()
@@ -409,6 +468,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setNotificationFilterMode(savedNotificationFilterMode)
       setNotificationFilterList(savedNotificationFilterList)
       setMessagePushEnabled(savedMessagePushEnabled)
+      setMessagePushFilterMode(savedMessagePushFilterMode)
+      setMessagePushFilterList(savedMessagePushFilterList)
+      if (contactsResult.success && Array.isArray(contactsResult.contacts)) {
+        setMessagePushContactOptions(contactsResult.contacts as ContactInfo[])
+      }
       setLaunchAtStartup(savedLaunchAtStartupStatus.enabled)
       setLaunchAtStartupSupported(savedLaunchAtStartupStatus.supported)
       setLaunchAtStartupReason(savedLaunchAtStartupStatus.reason || '')
@@ -448,9 +512,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       // 加载 AI 见解配置
       const savedAiInsightEnabled = await configService.getAiInsightEnabled()
-      const savedAiInsightApiBaseUrl = await configService.getAiInsightApiBaseUrl()
-      const savedAiInsightApiKey = await configService.getAiInsightApiKey()
-      const savedAiInsightApiModel = await configService.getAiInsightApiModel()
+      const savedAiModelApiBaseUrl = await configService.getAiModelApiBaseUrl()
+      const savedAiModelApiKey = await configService.getAiModelApiKey()
+      const savedAiModelApiModel = await configService.getAiModelApiModel()
       const savedAiInsightSilenceDays = await configService.getAiInsightSilenceDays()
   const savedAiInsightAllowContext = await configService.getAiInsightAllowContext()
   const savedAiInsightWhitelistEnabled = await configService.getAiInsightWhitelistEnabled()
@@ -462,10 +526,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const savedAiInsightTelegramEnabled = await configService.getAiInsightTelegramEnabled()
   const savedAiInsightTelegramToken = await configService.getAiInsightTelegramToken()
   const savedAiInsightTelegramChatIds = await configService.getAiInsightTelegramChatIds()
+  const savedAiFootprintEnabled = await configService.getAiFootprintEnabled()
+  const savedAiFootprintSystemPrompt = await configService.getAiFootprintSystemPrompt()
   setAiInsightEnabled(savedAiInsightEnabled)
-  setAiInsightApiBaseUrl(savedAiInsightApiBaseUrl)
-  setAiInsightApiKey(savedAiInsightApiKey)
-  setAiInsightApiModel(savedAiInsightApiModel)
+  setAiModelApiBaseUrl(savedAiModelApiBaseUrl)
+  setAiModelApiKey(savedAiModelApiKey)
+  setAiModelApiModel(savedAiModelApiModel)
   setAiInsightSilenceDays(savedAiInsightSilenceDays)
   setAiInsightAllowContext(savedAiInsightAllowContext)
   setAiInsightWhitelistEnabled(savedAiInsightWhitelistEnabled)
@@ -477,6 +543,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   setAiInsightTelegramEnabled(savedAiInsightTelegramEnabled)
   setAiInsightTelegramToken(savedAiInsightTelegramToken)
   setAiInsightTelegramChatIds(savedAiInsightTelegramChatIds)
+  setAiFootprintEnabled(savedAiFootprintEnabled)
+  setAiFootprintSystemPrompt(savedAiFootprintSystemPrompt)
 
     } catch (e: any) {
       console.error('加载配置失败:', e)
@@ -1154,7 +1222,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         const keysOverride = buildKeysFromInputs({ decryptKey: result.key })
         await handleScanWxid(true, { preferCurrentKeys: true, showDialog: false, keysOverride })
       } else {
-        if (result.error?.includes('未找到微信安装路径') || result.error?.includes('启动微信失败')) {
+        if (
+          result.error?.includes('未找到微信安装路径') ||
+          result.error?.includes('启动微信失败') ||
+          result.error?.includes('未能自动启动微信') ||
+          result.error?.includes('未找到微信进程') ||
+          result.error?.includes('微信进程未运行')
+        ) {
           setIsManualStartPrompt(true)
           setDbKeyStatus('需要手动启动微信')
         } else {
@@ -1610,15 +1684,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   )
 
   const renderNotificationTab = () => {
-    // 获取已过滤会话的信息
-    const getSessionInfo = (username: string) => {
-      const session = chatSessions.find(s => s.username === username)
-      return {
-        displayName: session?.displayName || username,
-        avatarUrl: session?.avatarUrl || ''
-      }
-    }
-
     // 添加会话到过滤列表
     const handleAddToFilterList = async (username: string) => {
       if (notificationFilterList.includes(username)) return
@@ -1635,18 +1700,6 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       await configService.setNotificationFilterList(newList)
       showMessage('已从过滤列表移除', true)
     }
-
-    // 过滤掉已在列表中的会话，并根据搜索关键字过滤
-    const availableSessions = chatSessions.filter(s => {
-      if (notificationFilterList.includes(s.username)) return false
-      if (filterSearchKeyword) {
-        const keyword = filterSearchKeyword.toLowerCase()
-        const displayName = (s.displayName || '').toLowerCase()
-        const username = s.username.toLowerCase()
-        return displayName.includes(keyword) || username.includes(keyword)
-      }
-      return true
-    })
 
     return (
       <div className="tab-content">
@@ -1739,17 +1792,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 <div
                   key={option.value}
                   className={`custom-select-option ${notificationFilterMode === option.value ? 'selected' : ''}`}
-                  onClick={async () => {
-                    const val = option.value as 'all' | 'whitelist' | 'blacklist'
-                    setNotificationFilterMode(val)
-                    setFilterModeDropdownOpen(false)
-                    await configService.setNotificationFilterMode(val)
-                    showMessage(
-                      val === 'all' ? '已设为接收所有通知' :
-                        val === 'whitelist' ? '已设为仅接收白名单通知' : '已设为屏蔽黑名单通知',
-                      true
-                    )
-                  }}
+                  onClick={() => { void handleSetNotificationFilterMode(option.value as SessionFilterMode) }}
                 >
                   {option.label}
                   {notificationFilterMode === option.value && <Check size={14} />}
@@ -1768,11 +1811,33 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 : '点击左侧会话添加到黑名单，点击右侧会话从黑名单移除'}
             </span>
 
+            <div className="push-filter-type-tabs">
+              {sessionFilterTypeOptions.map(option => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`push-filter-type-tab ${notificationTypeFilter === option.value ? 'active' : ''}`}
+                  onClick={() => setNotificationTypeFilter(option.value)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+
             <div className="notification-filter-container">
               {/* 可选会话列表 */}
               <div className="filter-panel">
                 <div className="filter-panel-header">
                   <span>可选会话</span>
+                  {notificationAvailableSessions.length > 0 && (
+                    <button
+                      type="button"
+                      className="filter-panel-action"
+                      onClick={() => { void handleAddAllNotificationFilterSessions() }}
+                    >
+                      全选当前
+                    </button>
+                  )}
                   <div className="filter-search-box">
                     <Search size={14} />
                     <input
@@ -1784,8 +1849,8 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                   </div>
                 </div>
                 <div className="filter-panel-list">
-                  {availableSessions.length > 0 ? (
-                    availableSessions.map(session => (
+                  {notificationAvailableSessions.length > 0 ? (
+                    notificationAvailableSessions.map(session => (
                       <div
                         key={session.username}
                         className="filter-panel-item"
@@ -1797,12 +1862,13 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                           size={28}
                         />
                         <span className="filter-item-name">{session.displayName || session.username}</span>
+                        <span className="filter-item-type">{getSessionFilterTypeLabel(session.type)}</span>
                         <span className="filter-item-action">+</span>
                       </div>
                     ))
                   ) : (
                     <div className="filter-panel-empty">
-                      {filterSearchKeyword ? '没有匹配的会话' : '暂无可添加的会话'}
+                      {filterSearchKeyword || notificationTypeFilter !== 'all' ? '没有匹配的会话' : '暂无可添加的会话'}
                     </div>
                   )}
                 </div>
@@ -1815,11 +1881,20 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                   {notificationFilterList.length > 0 && (
                     <span className="filter-panel-count">{notificationFilterList.length}</span>
                   )}
+                  {notificationFilterList.length > 0 && (
+                    <button
+                      type="button"
+                      className="filter-panel-action"
+                      onClick={() => { void handleRemoveAllNotificationFilterSessions() }}
+                    >
+                      全不选
+                    </button>
+                  )}
                 </div>
                 <div className="filter-panel-list">
                   {notificationFilterList.length > 0 ? (
                     notificationFilterList.map(username => {
-                      const info = getSessionInfo(username)
+                      const info = getSessionFilterOptionInfo(username)
                       return (
                         <div
                           key={username}
@@ -1832,6 +1907,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                             size={28}
                           />
                           <span className="filter-item-name">{info.displayName}</span>
+                          <span className="filter-item-type">{getSessionFilterTypeLabel(info.type)}</span>
                           <span className="filter-item-action">×</span>
                         </div>
                       )
@@ -2076,9 +2152,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         </div>
         {isManualStartPrompt ? (
           <div className="manual-prompt">
-            <p className="prompt-text">未能自动启动微信，请手动启动并登录后点击下方确认</p>
+            <p className="prompt-text">未能自动启动微信，请手动启动微信，看到登录窗口后点击下方确认</p>
             <button className="btn btn-primary btn-sm" onClick={handleManualConfirm}>
-              我已启动微信，继续检测
+              我已看到登录窗口，继续检测
             </button>
           </div>
         ) : (
@@ -2485,6 +2561,163 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     showMessage(enabled ? '已开启主动推送' : '已关闭主动推送', true)
   }
 
+  const getSessionFilterType = (session: { username: string; type?: ContactInfo['type'] | number }): SessionFilterType => {
+    const username = String(session.username || '').trim()
+    if (username.endsWith('@chatroom')) return 'group'
+    if (username.startsWith('gh_') || session.type === 'official') return 'official'
+    if (username.toLowerCase().includes('placeholder_foldgroup')) return 'other'
+    if (session.type === 'former_friend' || session.type === 'other') return 'other'
+    return 'private'
+  }
+
+  const getSessionFilterTypeLabel = (type: SessionFilterType) => {
+    switch (type) {
+      case 'private': return '私聊'
+      case 'group': return '群聊'
+      case 'official': return '订阅号/服务号'
+      default: return '其他/非好友'
+    }
+  }
+
+  const handleSetMessagePushFilterMode = async (mode: configService.MessagePushFilterMode) => {
+    setMessagePushFilterMode(mode)
+    setMessagePushFilterDropdownOpen(false)
+    await configService.setMessagePushFilterMode(mode)
+    showMessage(
+      mode === 'all' ? '主动推送已设为接收所有会话' :
+        mode === 'whitelist' ? '主动推送已设为仅推送白名单' : '主动推送已设为屏蔽黑名单',
+      true
+    )
+  }
+
+  const handleAddMessagePushFilterSession = async (username: string) => {
+    if (messagePushFilterList.includes(username)) return
+    const next = [...messagePushFilterList, username]
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage('已添加到主动推送过滤列表', true)
+  }
+
+  const handleRemoveMessagePushFilterSession = async (username: string) => {
+    const next = messagePushFilterList.filter(item => item !== username)
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage('已从主动推送过滤列表移除', true)
+  }
+
+  const handleAddAllMessagePushFilterSessions = async () => {
+    const usernames = messagePushAvailableSessions.map(session => session.username)
+    if (usernames.length === 0) return
+    const next = Array.from(new Set([...messagePushFilterList, ...usernames]))
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage(`已添加 ${usernames.length} 个会话`, true)
+  }
+
+  const handleRemoveAllMessagePushFilterSessions = async () => {
+    if (messagePushFilterList.length === 0) return
+    setMessagePushFilterList([])
+    await configService.setMessagePushFilterList([])
+    showMessage('已清空主动推送过滤列表', true)
+  }
+
+  const sessionFilterOptionMap = new Map<string, SessionFilterOption>()
+
+  for (const session of chatSessions) {
+    if (session.username.toLowerCase().includes('placeholder_foldgroup')) continue
+    sessionFilterOptionMap.set(session.username, {
+      username: session.username,
+      displayName: session.displayName || session.username,
+      avatarUrl: session.avatarUrl,
+      type: getSessionFilterType(session)
+    })
+  }
+
+  for (const contact of messagePushContactOptions) {
+    if (!contact.username) continue
+    if (contact.type !== 'friend' && contact.type !== 'group' && contact.type !== 'official' && contact.type !== 'former_friend') continue
+    const existing = sessionFilterOptionMap.get(contact.username)
+    sessionFilterOptionMap.set(contact.username, {
+      username: contact.username,
+      displayName: existing?.displayName || contact.displayName || contact.remark || contact.nickname || contact.username,
+      avatarUrl: existing?.avatarUrl || contact.avatarUrl,
+      type: getSessionFilterType(contact)
+    })
+  }
+
+  const sessionFilterOptions = Array.from(sessionFilterOptionMap.values())
+    .sort((a, b) => {
+      const aSession = chatSessions.find(session => session.username === a.username)
+      const bSession = chatSessions.find(session => session.username === b.username)
+      return Number(bSession?.sortTimestamp || bSession?.lastTimestamp || 0) -
+        Number(aSession?.sortTimestamp || aSession?.lastTimestamp || 0)
+    })
+
+  const getSessionFilterOptionInfo = (username: string) => {
+    return sessionFilterOptionMap.get(username) || {
+      username,
+      displayName: username,
+      avatarUrl: undefined,
+      type: 'other' as SessionFilterType
+    }
+  }
+
+  const getAvailableSessionFilterOptions = (
+    selectedList: string[],
+    typeFilter: SessionFilterTypeValue,
+    searchKeyword: string
+  ) => {
+    const keyword = searchKeyword.trim().toLowerCase()
+    return sessionFilterOptions.filter(session => {
+      if (selectedList.includes(session.username)) return false
+      if (typeFilter !== 'all' && session.type !== typeFilter) return false
+      if (keyword) {
+        return String(session.displayName || '').toLowerCase().includes(keyword) ||
+          session.username.toLowerCase().includes(keyword)
+      }
+      return true
+    })
+  }
+
+  const notificationAvailableSessions = getAvailableSessionFilterOptions(
+    notificationFilterList,
+    notificationTypeFilter,
+    filterSearchKeyword
+  )
+
+  const messagePushAvailableSessions = getAvailableSessionFilterOptions(
+    messagePushFilterList,
+    messagePushTypeFilter,
+    messagePushFilterSearchKeyword
+  )
+
+  const handleAddAllNotificationFilterSessions = async () => {
+    const usernames = notificationAvailableSessions.map(session => session.username)
+    if (usernames.length === 0) return
+    const next = Array.from(new Set([...notificationFilterList, ...usernames]))
+    setNotificationFilterList(next)
+    await configService.setNotificationFilterList(next)
+    showMessage(`已添加 ${usernames.length} 个会话`, true)
+  }
+
+  const handleRemoveAllNotificationFilterSessions = async () => {
+    if (notificationFilterList.length === 0) return
+    setNotificationFilterList([])
+    await configService.setNotificationFilterList([])
+    showMessage('已清空通知过滤列表', true)
+  }
+
+  const handleSetNotificationFilterMode = async (mode: SessionFilterMode) => {
+    setNotificationFilterMode(mode)
+    setFilterModeDropdownOpen(false)
+    await configService.setNotificationFilterMode(mode)
+    showMessage(
+      mode === 'all' ? '已设为接收所有通知' :
+        mode === 'whitelist' ? '已设为仅接收白名单通知' : '已设为屏蔽黑名单通知',
+      true
+    )
+  }
+
   const handleTestInsightConnection = async () => {
     setIsTestingInsight(true)
     setInsightTestResult(null)
@@ -2497,6 +2730,118 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setIsTestingInsight(false)
     }
   }
+
+  const renderAiCommonTab = () => (
+    <div className="tab-content">
+      <div className="form-group">
+        <label>通用 API 地址</label>
+        <span className="form-hint">
+          这是「AI 见解」与「AI 足迹总结」共享的模型接入配置。填写 OpenAI 兼容接口的 <strong>Base URL</strong>，末尾<strong>不要加斜杠</strong>。
+          程序会自动拼接 <code>/chat/completions</code>。
+          <br />
+          示例：<code>https://api.ohmygpt.com/v1</code> 或 <code>https://api.openai.com/v1</code>
+        </span>
+        <input
+          type="text"
+          className="field-input"
+          value={aiModelApiBaseUrl}
+          placeholder="https://api.ohmygpt.com/v1"
+          onChange={(e) => {
+            const val = e.target.value
+            setAiModelApiBaseUrl(val)
+            scheduleConfigSave('aiModelApiBaseUrl', () => configService.setAiModelApiBaseUrl(val))
+          }}
+        />
+      </div>
+
+      <div className="form-group">
+        <label>通用 API Key</label>
+        <span className="form-hint">
+          你的 API Key，保存后经过系统加密存储，不会明文写入磁盘。
+        </span>
+        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+          <input
+            type={showInsightApiKey ? 'text' : 'password'}
+            className="field-input"
+            value={aiModelApiKey}
+            placeholder="sk-..."
+            onChange={(e) => {
+              const val = e.target.value
+              setAiModelApiKey(val)
+              scheduleConfigSave('aiModelApiKey', () => configService.setAiModelApiKey(val))
+            }}
+            style={{ flex: 1 }}
+          />
+          <button
+            className="btn btn-secondary"
+            onClick={() => setShowInsightApiKey(!showInsightApiKey)}
+            title={showInsightApiKey ? '隐藏' : '显示'}
+          >
+            {showInsightApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+          {aiModelApiKey && (
+            <button
+              className="btn btn-danger"
+              onClick={async () => {
+                setAiModelApiKey('')
+                await configService.setAiModelApiKey('')
+              }}
+              title="清除 Key"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="form-group">
+        <label>通用模型名称</label>
+        <span className="form-hint">
+          填写你的 API 提供商支持的模型名，将同时用于见解和足迹模块。
+          <br />
+          常用示例：<code>gpt-4o-mini</code>、<code>gpt-4o</code>、<code>deepseek-chat</code>、<code>claude-3-5-haiku-20241022</code>
+        </span>
+        <input
+          type="text"
+          className="field-input"
+          value={aiModelApiModel}
+          placeholder="gpt-4o-mini"
+          onChange={(e) => {
+            const val = e.target.value.trim() || 'gpt-4o-mini'
+            setAiModelApiModel(val)
+            scheduleConfigSave('aiModelApiModel', () => configService.setAiModelApiModel(val))
+          }}
+          style={{ width: 260 }}
+        />
+      </div>
+
+      <div className="form-group">
+        <label>连接测试</label>
+        <span className="form-hint">
+          测试通用模型连接，见解与足迹都会使用这套配置。
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={handleTestInsightConnection}
+            disabled={isTestingInsight || !aiModelApiBaseUrl || !aiModelApiKey}
+          >
+            {isTestingInsight ? (
+              <><Loader2 size={14} style={{ marginRight: 4, animation: 'spin 1s linear infinite' }} />测试中...</>
+            ) : (
+              <>测试 API 连接</>
+            )}
+          </button>
+          {insightTestResult && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: insightTestResult.success ? 'var(--color-success, #22c55e)' : 'var(--color-danger, #ef4444)' }}>
+              {insightTestResult.success ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+              {insightTestResult.message}
+            </span>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 
   const renderInsightTab = () => (
     <div className="tab-content">
@@ -2526,149 +2871,41 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
 
       <div className="divider" />
 
-      {/* API 配置 */}
-      <div className="form-group">
-        <label>API 地址</label>
-        <span className="form-hint">
-          填写 OpenAI 兼容接口的 <strong>Base URL</strong>，末尾<strong>不要加斜杠</strong>。
-          程序会自动拼接 <code>/chat/completions</code>。
-          <br />
-          示例：<code>https://api.ohmygpt.com/v1</code> 或 <code>https://api.openai.com/v1</code>
-        </span>
-        <input
-          type="text"
-          className="field-input"
-          value={aiInsightApiBaseUrl}
-          placeholder="https://api.ohmygpt.com/v1"
-          onChange={(e) => {
-            const val = e.target.value
-            setAiInsightApiBaseUrl(val)
-            scheduleConfigSave('aiInsightApiBaseUrl', () => configService.setAiInsightApiBaseUrl(val))
-          }}
-          style={{ fontFamily: 'monospace' }}
-        />
-      </div>
-
-      <div className="form-group">
-        <label>API Key</label>
-        <span className="form-hint">
-          你的 API Key，保存后经过系统加密存储，不会明文写入磁盘。
-        </span>
-        <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
-          <input
-            type={showInsightApiKey ? 'text' : 'password'}
-            className="field-input"
-            value={aiInsightApiKey}
-            placeholder="sk-..."
-            onChange={(e) => {
-              const val = e.target.value
-              setAiInsightApiKey(val)
-              scheduleConfigSave('aiInsightApiKey', () => configService.setAiInsightApiKey(val))
-            }}
-            style={{ flex: 1, fontFamily: 'monospace' }}
-          />
-          <button
-            className="btn btn-secondary"
-            onClick={() => setShowInsightApiKey(!showInsightApiKey)}
-            title={showInsightApiKey ? '隐藏' : '显示'}
-          >
-            {showInsightApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
-          </button>
-          {aiInsightApiKey && (
-            <button
-              className="btn btn-danger"
-              onClick={async () => {
-                setAiInsightApiKey('')
-                await configService.setAiInsightApiKey('')
-              }}
-              title="清除 Key"
-            >
-              <Trash2 size={14} />
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="form-group">
-        <label>模型名称</label>
-        <span className="form-hint">
-          填写你的 API 提供商支持的模型名，建议使用综合能力较强的模型以获得有洞察力的见解。
-          <br />
-          常用示例：<code>gpt-4o-mini</code>、<code>gpt-4o</code>、<code>deepseek-chat</code>、<code>claude-3-5-haiku-20241022</code>
-        </span>
-        <input
-          type="text"
-          className="field-input"
-          value={aiInsightApiModel}
-          placeholder="gpt-4o-mini"
-          onChange={(e) => {
-            const val = e.target.value.trim() || 'gpt-4o-mini'
-            setAiInsightApiModel(val)
-            scheduleConfigSave('aiInsightApiModel', () => configService.setAiInsightApiModel(val))
-          }}
-          style={{ width: 260, fontFamily: 'monospace' }}
-        />
-      </div>
-
-      {/* 测试连接 + 触发测试 */}
       <div className="form-group">
         <label>调试工具</label>
         <span className="form-hint">
-          先用"测试 API 连接"确认 Key 和 URL 填写正确，再用"立即触发测试见解"验证完整链路（数据库→API→弹窗）。触发后请留意右下角通知弹窗。
+          该功能依赖「AI 通用」里的模型配置。用于验证完整链路（数据库→API→弹窗）。
         </span>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginTop: '10px' }}>
-          {/* 测试 API 连接 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-secondary"
-              onClick={handleTestInsightConnection}
-              disabled={isTestingInsight || !aiInsightApiBaseUrl || !aiInsightApiKey}
-            >
-              {isTestingInsight ? (
-                <><Loader2 size={14} style={{ marginRight: 4, animation: 'spin 1s linear infinite' }} />测试中...</>
-              ) : (
-                <>测试 API 连接</>
-              )}
-            </button>
-            {insightTestResult && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: insightTestResult.success ? 'var(--color-success, #22c55e)' : 'var(--color-danger, #ef4444)' }}>
-                {insightTestResult.success ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                {insightTestResult.message}
-              </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', marginTop: '10px' }}>
+          <button
+            className="btn btn-secondary"
+            onClick={async () => {
+              setIsTriggeringInsightTest(true)
+              setInsightTriggerResult(null)
+              try {
+                const result = await (window.electronAPI as any).insight.triggerTest()
+                setInsightTriggerResult(result)
+              } catch (e: any) {
+                setInsightTriggerResult({ success: false, message: `调用失败：${e?.message || String(e)}` })
+              } finally {
+                setIsTriggeringInsightTest(false)
+              }
+            }}
+            disabled={isTriggeringInsightTest || !aiInsightEnabled || !aiModelApiBaseUrl || !aiModelApiKey}
+            title={!aiInsightEnabled ? '请先开启 AI 见解总开关' : ''}
+          >
+            {isTriggeringInsightTest ? (
+              <><Loader2 size={14} style={{ marginRight: 4, animation: 'spin 1s linear infinite' }} />触发中...</>
+            ) : (
+              <>立即触发测试见解</>
             )}
-          </div>
-          {/* 触发测试见解 */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
-            <button
-              className="btn btn-secondary"
-              onClick={async () => {
-                setIsTriggeringInsightTest(true)
-                setInsightTriggerResult(null)
-                try {
-                  const result = await (window.electronAPI as any).insight.triggerTest()
-                  setInsightTriggerResult(result)
-                } catch (e: any) {
-                  setInsightTriggerResult({ success: false, message: `调用失败：${e?.message || String(e)}` })
-                } finally {
-                  setIsTriggeringInsightTest(false)
-                }
-              }}
-              disabled={isTriggeringInsightTest || !aiInsightEnabled || !aiInsightApiBaseUrl || !aiInsightApiKey}
-              title={!aiInsightEnabled ? '请先开启 AI 见解总开关' : ''}
-            >
-              {isTriggeringInsightTest ? (
-                <><Loader2 size={14} style={{ marginRight: 4, animation: 'spin 1s linear infinite' }} />触发中...</>
-              ) : (
-                <>立即触发测试见解</>
-              )}
-            </button>
-            {insightTriggerResult && (
-              <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: insightTriggerResult.success ? 'var(--color-success, #22c55e)' : 'var(--color-danger, #ef4444)' }}>
-                {insightTriggerResult.success ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                {insightTriggerResult.message}
-              </span>
-            )}
-          </div>
+          </button>
+          {insightTriggerResult && (
+            <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 13, color: insightTriggerResult.success ? 'var(--color-success, #22c55e)' : 'var(--color-danger, #ef4444)' }}>
+              {insightTriggerResult.success ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+              {insightTriggerResult.message}
+            </span>
+          )}
         </div>
       </div>
 
@@ -2824,9 +3061,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
               当前显示内置默认提示词，可直接编辑修改。修改后立即生效，无需重启。可变的统计信息（触发次数、对话内容）会自动附加在用户消息里，无需在此填写。
             </span>
             <textarea
-              className="field-input"
+              className="field-input ai-prompt-textarea"
               rows={8}
-              style={{ width: '100%', resize: 'vertical', fontFamily: 'monospace', fontSize: 12 }}
+              style={{ width: '100%', resize: 'vertical' }}
               value={displayValue}
               onChange={(e) => {
                 const val = e.target.value
@@ -3106,6 +3343,74 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     </div>
   )
 
+  const renderAiFootprintTab = () => (
+    <div className="tab-content">
+      {(() => {
+        const DEFAULT_FOOTPRINT_PROMPT = `你是用户的聊天足迹教练，负责基于统计数据给出一段简明复盘。
+要求：
+1. 输出 2-3 句，总长度不超过 180 字。
+2. 必须包含：总体观察 + 一个可执行建议。
+3. 语气务实，不夸张，不使用 Markdown。`
+        const displayValue = aiFootprintSystemPrompt || DEFAULT_FOOTPRINT_PROMPT
+        return (
+          <>
+            <div className="form-group">
+              <label>AI 足迹总结</label>
+              <span className="form-hint">
+                开启后，可在「我的微信足迹」页面一键生成当前范围的 AI 复盘总结。
+              </span>
+              <div className="log-toggle-line">
+                <span className="log-status">{aiFootprintEnabled ? '已开启' : '已关闭'}</span>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={aiFootprintEnabled}
+                    onChange={async (e) => {
+                      const val = e.target.checked
+                      setAiFootprintEnabled(val)
+                      await configService.setAiFootprintEnabled(val)
+                    }}
+                  />
+                  <span className="switch-slider" />
+                </label>
+              </div>
+            </div>
+
+            <div className="form-group">
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                <label style={{ marginBottom: 0 }}>足迹总结提示词</label>
+                <button
+                  className="button-secondary"
+                  style={{ fontSize: 12, padding: '3px 10px' }}
+                  onClick={async () => {
+                    setAiFootprintSystemPrompt('')
+                    await configService.setAiFootprintSystemPrompt('')
+                  }}
+                >
+                  恢复默认
+                </button>
+              </div>
+              <span className="form-hint">
+                足迹模块专用的小配置。留空时使用内置默认提示词。
+              </span>
+              <textarea
+                className="field-input ai-prompt-textarea"
+                rows={6}
+                style={{ width: '100%', resize: 'vertical' }}
+                value={displayValue}
+                onChange={(e) => {
+                  const val = e.target.value
+                  setAiFootprintSystemPrompt(val)
+                  scheduleConfigSave('aiFootprintSystemPrompt', () => configService.setAiFootprintSystemPrompt(val))
+                }}
+              />
+            </div>
+          </>
+        )
+      })()}
+    </div>
+  )
+
   const renderApiTab = () => (
     <div className="tab-content">
       <div className="form-group">
@@ -3247,6 +3552,154 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
 
       <div className="form-group">
+        <label>推送会话过滤</label>
+        <span className="form-hint">选择只推送特定会话，或屏蔽特定会话</span>
+        <div className="custom-select">
+          <div
+            className={`custom-select-trigger ${messagePushFilterDropdownOpen ? 'open' : ''}`}
+            onClick={() => setMessagePushFilterDropdownOpen(!messagePushFilterDropdownOpen)}
+          >
+            <span className="custom-select-value">
+              {messagePushFilterMode === 'all' ? '推送所有会话' :
+                messagePushFilterMode === 'whitelist' ? '仅推送白名单' : '屏蔽黑名单'}
+            </span>
+            <ChevronDown size={14} className={`custom-select-arrow ${messagePushFilterDropdownOpen ? 'rotate' : ''}`} />
+          </div>
+          <div className={`custom-select-dropdown ${messagePushFilterDropdownOpen ? 'open' : ''}`}>
+            {[
+              { value: 'all', label: '推送所有会话' },
+              { value: 'whitelist', label: '仅推送白名单' },
+              { value: 'blacklist', label: '屏蔽黑名单' }
+            ].map(option => (
+              <div
+                key={option.value}
+                className={`custom-select-option ${messagePushFilterMode === option.value ? 'selected' : ''}`}
+                onClick={() => { void handleSetMessagePushFilterMode(option.value as configService.MessagePushFilterMode) }}
+              >
+                {option.label}
+                {messagePushFilterMode === option.value && <Check size={14} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {messagePushFilterMode !== 'all' && (
+        <div className="form-group">
+          <label>{messagePushFilterMode === 'whitelist' ? '主动推送白名单' : '主动推送黑名单'}</label>
+          <span className="form-hint">
+            {messagePushFilterMode === 'whitelist'
+              ? '点击左侧会话添加到白名单，只有白名单会话会推送'
+              : '点击左侧会话添加到黑名单，黑名单会话不会推送'}
+          </span>
+          <div className="push-filter-type-tabs">
+            {sessionFilterTypeOptions.map(option => (
+              <button
+                key={option.value}
+                type="button"
+                className={`push-filter-type-tab ${messagePushTypeFilter === option.value ? 'active' : ''}`}
+                onClick={() => setMessagePushTypeFilter(option.value)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="notification-filter-container">
+            <div className="filter-panel">
+              <div className="filter-panel-header">
+                <span>可选会话</span>
+                {messagePushAvailableSessions.length > 0 && (
+                  <button
+                    type="button"
+                    className="filter-panel-action"
+                    onClick={() => { void handleAddAllMessagePushFilterSessions() }}
+                  >
+                    全选当前
+                  </button>
+                )}
+                <div className="filter-search-box">
+                  <Search size={14} />
+                  <input
+                    type="text"
+                    placeholder="搜索会话..."
+                    value={messagePushFilterSearchKeyword}
+                    onChange={(e) => setMessagePushFilterSearchKeyword(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="filter-panel-list">
+                {messagePushAvailableSessions.length > 0 ? (
+                  messagePushAvailableSessions.map(session => (
+                    <div
+                      key={session.username}
+                      className="filter-panel-item"
+                      onClick={() => { void handleAddMessagePushFilterSession(session.username) }}
+                    >
+                      <Avatar
+                        src={session.avatarUrl}
+                        name={session.displayName || session.username}
+                        size={28}
+                      />
+                      <span className="filter-item-name">{session.displayName || session.username}</span>
+                      <span className="filter-item-type">{getSessionFilterTypeLabel(session.type)}</span>
+                      <span className="filter-item-action">+</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="filter-panel-empty">
+                    {messagePushFilterSearchKeyword || messagePushTypeFilter !== 'all' ? '没有匹配的会话' : '暂无可添加的会话'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="filter-panel">
+              <div className="filter-panel-header">
+                <span>{messagePushFilterMode === 'whitelist' ? '白名单' : '黑名单'}</span>
+                {messagePushFilterList.length > 0 && (
+                  <span className="filter-panel-count">{messagePushFilterList.length}</span>
+                )}
+                {messagePushFilterList.length > 0 && (
+                  <button
+                    type="button"
+                    className="filter-panel-action"
+                    onClick={() => { void handleRemoveAllMessagePushFilterSessions() }}
+                  >
+                    全不选
+                  </button>
+                )}
+              </div>
+              <div className="filter-panel-list">
+                {messagePushFilterList.length > 0 ? (
+                  messagePushFilterList.map(username => {
+                    const session = getSessionFilterOptionInfo(username)
+                    return (
+                      <div
+                        key={username}
+                        className="filter-panel-item selected"
+                        onClick={() => { void handleRemoveMessagePushFilterSession(username) }}
+                      >
+                        <Avatar
+                          src={session.avatarUrl}
+                          name={session.displayName || username}
+                          size={28}
+                        />
+                        <span className="filter-item-name">{session.displayName || username}</span>
+                        <span className="filter-item-type">{getSessionFilterTypeLabel(session.type)}</span>
+                        <span className="filter-item-action">×</span>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="filter-panel-empty">尚未添加任何会话</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="form-group">
         <label>推送地址</label>
         <span className="form-hint">外部软件连接这个 SSE 地址即可接收新消息推送；需要先开启上方 `HTTP API 服务`</span>
         <div className="api-url-display">
@@ -3280,7 +3733,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </div>
             <p className="api-desc">通过 SSE 长连接接收消息事件，建议接收端按 `messageKey` 去重。</p>
             <div className="api-params">
-              {['event', 'sessionId', 'messageKey', 'avatarUrl', 'sourceName', 'groupName?', 'content'].map((param) => (
+              {['event', 'sessionId', 'sessionType', 'messageKey', 'avatarUrl', 'sourceName', 'groupName?', 'content'].map((param) => (
                 <span key={param} className="param">
                   <code>{param}</code>
                 </span>
@@ -3780,6 +4233,33 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
                 <span>{tab.label}</span>
               </button>
             ))}
+
+            <div className={`tab-group ${aiGroupExpanded ? 'expanded' : ''}`}>
+              <button
+                className={`tab-btn tab-group-trigger ${(activeTab === 'aiCommon' || activeTab === 'insight' || activeTab === 'aiFootprint') ? 'active' : ''}`}
+                onClick={() => setAiGroupExpanded((prev) => !prev)}
+                aria-expanded={aiGroupExpanded}
+              >
+                <Sparkles size={16} />
+                <span>AI 相关</span>
+                <ChevronDown size={14} className={`tab-group-arrow ${aiGroupExpanded ? 'expanded' : ''}`} />
+              </button>
+              <div className={`tab-sublist-wrap ${aiGroupExpanded ? 'expanded' : 'collapsed'}`}>
+                <div className="tab-sublist">
+                  {aiTabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      className={`tab-btn tab-sub-btn ${activeTab === tab.id ? 'active' : ''}`}
+                      onClick={() => setActiveTab(tab.id)}
+                      tabIndex={aiGroupExpanded ? 0 : -1}
+                    >
+                      <span className="tab-sub-dot" />
+                      <span>{tab.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
 
           <div className="settings-body">
@@ -3790,7 +4270,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             {activeTab === 'models' && renderModelsTab()}
             {activeTab === 'cache' && renderCacheTab()}
             {activeTab === 'api' && renderApiTab()}
+            {activeTab === 'aiCommon' && renderAiCommonTab()}
             {activeTab === 'insight' && renderInsightTab()}
+            {activeTab === 'aiFootprint' && renderAiFootprintTab()}
             {activeTab === 'updates' && renderUpdatesTab()}
             {activeTab === 'analytics' && renderAnalyticsTab()}
             {activeTab === 'security' && renderSecurityTab()}
