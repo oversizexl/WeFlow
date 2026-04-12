@@ -6,6 +6,7 @@ import { useThemeStore, themes } from '../stores/themeStore'
 import { useAnalyticsStore } from '../stores/analyticsStore'
 import { dialog } from '../services/ipc'
 import * as configService from '../services/config'
+import type { ContactInfo } from '../types/models'
 import {
   Eye, EyeOff, FolderSearch, FolderOpen, Search, Copy,
   RotateCcw, Trash2, Plug, Check, Sun, Moon, Monitor,
@@ -225,6 +226,12 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
   const [isTogglingApi, setIsTogglingApi] = useState(false)
   const [showApiWarning, setShowApiWarning] = useState(false)
   const [messagePushEnabled, setMessagePushEnabled] = useState(false)
+  const [messagePushFilterMode, setMessagePushFilterMode] = useState<configService.MessagePushFilterMode>('all')
+  const [messagePushFilterList, setMessagePushFilterList] = useState<string[]>([])
+  const [messagePushFilterDropdownOpen, setMessagePushFilterDropdownOpen] = useState(false)
+  const [messagePushFilterSearchKeyword, setMessagePushFilterSearchKeyword] = useState('')
+  const [messagePushTypeFilter, setMessagePushTypeFilter] = useState<'all' | configService.MessagePushSessionType>('all')
+  const [messagePushContactOptions, setMessagePushContactOptions] = useState<ContactInfo[]>([])
   const [antiRevokeSearchKeyword, setAntiRevokeSearchKeyword] = useState('')
   const [antiRevokeSelectedIds, setAntiRevokeSelectedIds] = useState<Set<string>>(new Set())
   const [antiRevokeStatusMap, setAntiRevokeStatusMap] = useState<Record<string, { installed?: boolean; loading?: boolean; error?: string }>>({})
@@ -356,15 +363,16 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
         setFilterModeDropdownOpen(false)
         setPositionDropdownOpen(false)
         setCloseBehaviorDropdownOpen(false)
+        setMessagePushFilterDropdownOpen(false)
       }
     }
-    if (filterModeDropdownOpen || positionDropdownOpen || closeBehaviorDropdownOpen) {
+    if (filterModeDropdownOpen || positionDropdownOpen || closeBehaviorDropdownOpen || messagePushFilterDropdownOpen) {
       document.addEventListener('click', handleClickOutside)
     }
     return () => {
       document.removeEventListener('click', handleClickOutside)
     }
-  }, [closeBehaviorDropdownOpen, filterModeDropdownOpen, positionDropdownOpen])
+  }, [closeBehaviorDropdownOpen, filterModeDropdownOpen, messagePushFilterDropdownOpen, positionDropdownOpen])
 
 
   const loadConfig = async () => {
@@ -387,6 +395,9 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       const savedNotificationFilterMode = await configService.getNotificationFilterMode()
       const savedNotificationFilterList = await configService.getNotificationFilterList()
       const savedMessagePushEnabled = await configService.getMessagePushEnabled()
+      const savedMessagePushFilterMode = await configService.getMessagePushFilterMode()
+      const savedMessagePushFilterList = await configService.getMessagePushFilterList()
+      const contactsResult = await window.electronAPI.chat.getContacts({ lite: true })
       const savedLaunchAtStartupStatus = await window.electronAPI.app.getLaunchAtStartupStatus()
       const savedWindowCloseBehavior = await configService.getWindowCloseBehavior()
       const savedQuoteLayout = await configService.getQuoteLayout()
@@ -437,6 +448,11 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       setNotificationFilterMode(savedNotificationFilterMode)
       setNotificationFilterList(savedNotificationFilterList)
       setMessagePushEnabled(savedMessagePushEnabled)
+      setMessagePushFilterMode(savedMessagePushFilterMode)
+      setMessagePushFilterList(savedMessagePushFilterList)
+      if (contactsResult.success && Array.isArray(contactsResult.contacts)) {
+        setMessagePushContactOptions(contactsResult.contacts as ContactInfo[])
+      }
       setLaunchAtStartup(savedLaunchAtStartupStatus.enabled)
       setLaunchAtStartupSupported(savedLaunchAtStartupStatus.supported)
       setLaunchAtStartupReason(savedLaunchAtStartupStatus.reason || '')
@@ -2517,6 +2533,116 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
     showMessage(enabled ? '已开启主动推送' : '已关闭主动推送', true)
   }
 
+  const getMessagePushSessionType = (session: { username: string; type?: ContactInfo['type'] | number }): configService.MessagePushSessionType => {
+    const username = String(session.username || '').trim()
+    if (username.endsWith('@chatroom')) return 'group'
+    if (username.startsWith('gh_') || session.type === 'official') return 'official'
+    if (username.toLowerCase().includes('placeholder_foldgroup')) return 'other'
+    if (session.type === 'former_friend' || session.type === 'other') return 'other'
+    return 'private'
+  }
+
+  const getMessagePushTypeLabel = (type: configService.MessagePushSessionType) => {
+    switch (type) {
+      case 'private': return '私聊'
+      case 'group': return '群聊'
+      case 'official': return '订阅号/服务号'
+      default: return '其他/非好友'
+    }
+  }
+
+  const handleSetMessagePushFilterMode = async (mode: configService.MessagePushFilterMode) => {
+    setMessagePushFilterMode(mode)
+    setMessagePushFilterDropdownOpen(false)
+    await configService.setMessagePushFilterMode(mode)
+    showMessage(
+      mode === 'all' ? '主动推送已设为接收所有会话' :
+        mode === 'whitelist' ? '主动推送已设为仅推送白名单' : '主动推送已设为屏蔽黑名单',
+      true
+    )
+  }
+
+  const handleAddMessagePushFilterSession = async (username: string) => {
+    if (messagePushFilterList.includes(username)) return
+    const next = [...messagePushFilterList, username]
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage('已添加到主动推送过滤列表', true)
+  }
+
+  const handleRemoveMessagePushFilterSession = async (username: string) => {
+    const next = messagePushFilterList.filter(item => item !== username)
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage('已从主动推送过滤列表移除', true)
+  }
+
+  const handleAddAllMessagePushFilterSessions = async () => {
+    const usernames = messagePushAvailableSessions.map(session => session.username)
+    if (usernames.length === 0) return
+    const next = Array.from(new Set([...messagePushFilterList, ...usernames]))
+    setMessagePushFilterList(next)
+    await configService.setMessagePushFilterList(next)
+    showMessage(`已添加 ${usernames.length} 个会话`, true)
+  }
+
+  const messagePushOptionMap = new Map<string, {
+    username: string
+    displayName: string
+    avatarUrl?: string
+    type: configService.MessagePushSessionType
+  }>()
+
+  for (const session of chatSessions) {
+    if (session.username.toLowerCase().includes('placeholder_foldgroup')) continue
+    messagePushOptionMap.set(session.username, {
+      username: session.username,
+      displayName: session.displayName || session.username,
+      avatarUrl: session.avatarUrl,
+      type: getMessagePushSessionType(session)
+    })
+  }
+
+  for (const contact of messagePushContactOptions) {
+    if (!contact.username) continue
+    if (contact.type !== 'friend' && contact.type !== 'group' && contact.type !== 'official' && contact.type !== 'former_friend') continue
+    const existing = messagePushOptionMap.get(contact.username)
+    messagePushOptionMap.set(contact.username, {
+      username: contact.username,
+      displayName: existing?.displayName || contact.displayName || contact.remark || contact.nickname || contact.username,
+      avatarUrl: existing?.avatarUrl || contact.avatarUrl,
+      type: getMessagePushSessionType(contact)
+    })
+  }
+
+  const messagePushOptions = Array.from(messagePushOptionMap.values())
+    .sort((a, b) => {
+      const aSession = chatSessions.find(session => session.username === a.username)
+      const bSession = chatSessions.find(session => session.username === b.username)
+      return Number(bSession?.sortTimestamp || bSession?.lastTimestamp || 0) -
+        Number(aSession?.sortTimestamp || aSession?.lastTimestamp || 0)
+    })
+
+  const messagePushAvailableSessions = messagePushOptions.filter(session => {
+    if (messagePushFilterList.includes(session.username)) return false
+    if (messagePushTypeFilter !== 'all' && session.type !== messagePushTypeFilter) return false
+    if (messagePushFilterSearchKeyword.trim()) {
+      const keyword = messagePushFilterSearchKeyword.trim().toLowerCase()
+      return String(session.displayName || '').toLowerCase().includes(keyword) ||
+        session.username.toLowerCase().includes(keyword)
+    }
+    return true
+  })
+
+  const getMessagePushOptionInfo = (username: string) => {
+    return messagePushOptionMap.get(username) || {
+      username,
+      displayName: username,
+      avatarUrl: undefined,
+      type: 'other' as configService.MessagePushSessionType
+    }
+  }
+
   const handleTestInsightConnection = async () => {
     setIsTestingInsight(true)
     setInsightTestResult(null)
@@ -3351,6 +3477,151 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
       </div>
 
       <div className="form-group">
+        <label>推送会话过滤</label>
+        <span className="form-hint">选择只推送特定会话，或屏蔽特定会话</span>
+        <div className="custom-select">
+          <div
+            className={`custom-select-trigger ${messagePushFilterDropdownOpen ? 'open' : ''}`}
+            onClick={() => setMessagePushFilterDropdownOpen(!messagePushFilterDropdownOpen)}
+          >
+            <span className="custom-select-value">
+              {messagePushFilterMode === 'all' ? '推送所有会话' :
+                messagePushFilterMode === 'whitelist' ? '仅推送白名单' : '屏蔽黑名单'}
+            </span>
+            <ChevronDown size={14} className={`custom-select-arrow ${messagePushFilterDropdownOpen ? 'rotate' : ''}`} />
+          </div>
+          <div className={`custom-select-dropdown ${messagePushFilterDropdownOpen ? 'open' : ''}`}>
+            {[
+              { value: 'all', label: '推送所有会话' },
+              { value: 'whitelist', label: '仅推送白名单' },
+              { value: 'blacklist', label: '屏蔽黑名单' }
+            ].map(option => (
+              <div
+                key={option.value}
+                className={`custom-select-option ${messagePushFilterMode === option.value ? 'selected' : ''}`}
+                onClick={() => { void handleSetMessagePushFilterMode(option.value as configService.MessagePushFilterMode) }}
+              >
+                {option.label}
+                {messagePushFilterMode === option.value && <Check size={14} />}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {messagePushFilterMode !== 'all' && (
+        <div className="form-group">
+          <label>{messagePushFilterMode === 'whitelist' ? '主动推送白名单' : '主动推送黑名单'}</label>
+          <span className="form-hint">
+            {messagePushFilterMode === 'whitelist'
+              ? '点击左侧会话添加到白名单，只有白名单会话会推送'
+              : '点击左侧会话添加到黑名单，黑名单会话不会推送'}
+          </span>
+          <div className="push-filter-type-tabs">
+            {[
+              { value: 'all', label: '全部' },
+              { value: 'private', label: '私聊' },
+              { value: 'group', label: '群聊' },
+              { value: 'official', label: '订阅号/服务号' },
+              { value: 'other', label: '其他/非好友' }
+            ].map(option => (
+              <button
+                key={option.value}
+                type="button"
+                className={`push-filter-type-tab ${messagePushTypeFilter === option.value ? 'active' : ''}`}
+                onClick={() => setMessagePushTypeFilter(option.value as 'all' | configService.MessagePushSessionType)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <div className="notification-filter-container">
+            <div className="filter-panel">
+              <div className="filter-panel-header">
+                <span>可选会话</span>
+                {messagePushAvailableSessions.length > 0 && (
+                  <button
+                    type="button"
+                    className="filter-panel-action"
+                    onClick={() => { void handleAddAllMessagePushFilterSessions() }}
+                  >
+                    全选当前
+                  </button>
+                )}
+                <div className="filter-search-box">
+                  <Search size={14} />
+                  <input
+                    type="text"
+                    placeholder="搜索会话..."
+                    value={messagePushFilterSearchKeyword}
+                    onChange={(e) => setMessagePushFilterSearchKeyword(e.target.value)}
+                  />
+                </div>
+              </div>
+              <div className="filter-panel-list">
+                {messagePushAvailableSessions.length > 0 ? (
+                  messagePushAvailableSessions.map(session => (
+                    <div
+                      key={session.username}
+                      className="filter-panel-item"
+                      onClick={() => { void handleAddMessagePushFilterSession(session.username) }}
+                    >
+                      <Avatar
+                        src={session.avatarUrl}
+                        name={session.displayName || session.username}
+                        size={28}
+                      />
+                      <span className="filter-item-name">{session.displayName || session.username}</span>
+                      <span className="filter-item-type">{getMessagePushTypeLabel(session.type)}</span>
+                      <span className="filter-item-action">+</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="filter-panel-empty">
+                    {messagePushFilterSearchKeyword ? '没有匹配的会话' : '暂无可添加的会话'}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="filter-panel">
+              <div className="filter-panel-header">
+                <span>{messagePushFilterMode === 'whitelist' ? '白名单' : '黑名单'}</span>
+                {messagePushFilterList.length > 0 && (
+                  <span className="filter-panel-count">{messagePushFilterList.length}</span>
+                )}
+              </div>
+              <div className="filter-panel-list">
+                {messagePushFilterList.length > 0 ? (
+                  messagePushFilterList.map(username => {
+                    const session = getMessagePushOptionInfo(username)
+                    return (
+                      <div
+                        key={username}
+                        className="filter-panel-item selected"
+                        onClick={() => { void handleRemoveMessagePushFilterSession(username) }}
+                      >
+                        <Avatar
+                          src={session.avatarUrl}
+                          name={session.displayName || username}
+                          size={28}
+                        />
+                        <span className="filter-item-name">{session.displayName || username}</span>
+                        <span className="filter-item-type">{getMessagePushTypeLabel(session.type)}</span>
+                        <span className="filter-item-action">×</span>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <div className="filter-panel-empty">尚未添加任何会话</div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="form-group">
         <label>推送地址</label>
         <span className="form-hint">外部软件连接这个 SSE 地址即可接收新消息推送；需要先开启上方 `HTTP API 服务`</span>
         <div className="api-url-display">
@@ -3384,7 +3655,7 @@ function SettingsPage({ onClose }: SettingsPageProps = {}) {
             </div>
             <p className="api-desc">通过 SSE 长连接接收消息事件，建议接收端按 `messageKey` 去重。</p>
             <div className="api-params">
-              {['event', 'sessionId', 'messageKey', 'avatarUrl', 'sourceName', 'groupName?', 'content'].map((param) => (
+              {['event', 'sessionId', 'sessionType', 'messageKey', 'avatarUrl', 'sourceName', 'groupName?', 'content'].map((param) => (
                 <span key={param} className="param">
                   <code>{param}</code>
                 </span>

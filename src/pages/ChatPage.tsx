@@ -1058,6 +1058,13 @@ const SessionItem = React.memo(function SessionItem({
           </div>
           <div className="session-bottom">
             <span className="session-summary">{session.summary || '查看公众号历史消息'}</span>
+            <div className="session-badges">
+              {session.unreadCount > 0 && (
+                <span className="unread-badge">
+                  {session.unreadCount > 99 ? '99+' : session.unreadCount}
+                </span>
+              )}
+            </div>
           </div>
         </div>
       </div>
@@ -5049,24 +5056,37 @@ function ChatPage(props: ChatPageProps) {
       return []
     }
 
+    const officialSessions = sessions.filter(s => s.username.startsWith('gh_'))
+
     // 检查是否有折叠的群聊
     const foldedGroups = sessions.filter(s => s.isFolded && !s.username.toLowerCase().includes('placeholder_foldgroup'))
     const hasFoldedGroups = foldedGroups.length > 0
 
     let visible = sessions.filter(s => {
       if (s.isFolded && !s.username.toLowerCase().includes('placeholder_foldgroup')) return false
+      if (s.username.startsWith('gh_')) return false
       return true
     })
+
+    const latestOfficial = officialSessions.reduce<ChatSession | null>((latest, current) => {
+      if (!latest) return current
+      const latestTime = latest.sortTimestamp || latest.lastTimestamp
+      const currentTime = current.sortTimestamp || current.lastTimestamp
+      return currentTime > latestTime ? current : latest
+    }, null)
+    const officialUnreadCount = officialSessions.reduce((sum, s) => sum + (s.unreadCount || 0), 0)
 
     const bizEntry: ChatSession = {
       username: OFFICIAL_ACCOUNTS_VIRTUAL_ID,
       displayName: '公众号',
-      summary: '查看公众号历史消息',
+      summary: latestOfficial
+        ? `${latestOfficial.displayName || latestOfficial.username}: ${latestOfficial.summary || '查看公众号历史消息'}`
+        : '查看公众号历史消息',
       type: 0,
       sortTimestamp: 9999999999,  // 放到最前面？  目前还没有严格的对时间进行排序，  后面可以改一下
-      lastTimestamp: 0,
-      lastMsgType: 0,
-      unreadCount: 0,
+      lastTimestamp: latestOfficial?.lastTimestamp || latestOfficial?.sortTimestamp || 0,
+      lastMsgType: latestOfficial?.lastMsgType || 0,
+      unreadCount: officialUnreadCount,
       isMuted: false,
       isFolded: false
     }
