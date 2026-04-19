@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
-import html2canvas from 'html2canvas'
 import {
   finishBackgroundTask,
   isBackgroundTaskCancelRequested,
@@ -403,6 +402,23 @@ function AnnualReportWindow() {
   const formatFileYearLabel = (year: number) => (year === 0 ? '历史以来' : String(year))
 
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
+  const waitForNextPaint = () => new Promise<void>((resolve) => {
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => resolve())
+    })
+  })
+  const captureSceneDataUrl = async (): Promise<string> => {
+    const captureFn = window.electronAPI.annualReport.captureCurrentWindow
+    if (typeof captureFn !== 'function') {
+      throw new Error('当前版本未启用原生截图接口，请重启应用后重试')
+    }
+
+    const captureResult = await captureFn()
+    if (!captureResult.success || !captureResult.dataUrl) {
+      throw new Error(captureResult.error || '原生截图失败')
+    }
+    return captureResult.dataUrl
+  }
 
   const handleExtract = async () => {
     if (isExtracting || !reportData || !containerRef.current) return
@@ -435,26 +451,20 @@ function AnnualReportWindow() {
     try {
       const images: Array<{ name: string; dataUrl: string }> = []
       root.classList.add('exporting-scenes')
+      await waitForNextPaint()
+      await wait(120)
+      // 预检：强制验证主进程已注册原生截图 handler，确保导出链路不是旧逻辑。
+      await captureSceneDataUrl()
 
       for (let i = 0; i < TOTAL_SCENES; i++) {
         setCurrentScene(i)
         setButtonText(`EXTRACTING ${i + 1}/${TOTAL_SCENES}`)
-        await wait(2000)
-
-        const canvas = await html2canvas(root, {
-          backgroundColor: '#050505',
-          scale: 2,
-          useCORS: true,
-          allowTaint: true,
-          logging: false,
-          onclone: (clonedDoc) => {
-            clonedDoc.querySelector('.annual-report-window')?.classList.add('exporting-scenes')
-          }
-        })
+        await waitForNextPaint()
+        await wait(1700)
 
         images.push({
           name: `P${String(i).padStart(2, '0')}_${sceneNames[i] || `SCENE_${i}`}.png`,
-          dataUrl: canvas.toDataURL('image/png')
+          dataUrl: await captureSceneDataUrl()
         })
       }
 
@@ -521,6 +531,13 @@ function AnnualReportWindow() {
 
   const yearTitle = reportData.year === 0 ? '历史以来' : String(reportData.year)
   const finalYearLabel = reportData.year === 0 ? 'ALL YEARS' : String(reportData.year)
+  const compactYearTitle = yearTitle.replace(/\s+/g, '')
+  const isNumericYearTitle = /^\d+$/.test(compactYearTitle)
+  const yearTitleVariantClass = isNumericYearTitle
+    ? 'title-year--numeric'
+    : compactYearTitle.length >= 5
+      ? 'title-year--text-long'
+      : 'title-year--text'
   const topFriends = reportData.coreFriends.slice(0, 3)
   const endingPostCount = reportData.snsStats?.totalPosts ?? 0
   const endingReceivedChats = reportData.socialInitiative?.receivedChats ?? 0
@@ -570,7 +587,7 @@ function AnnualReportWindow() {
           <div className="reveal-inner serif scene0-cn-tag">一切的起点</div>
         </div>
         <div className="reveal-wrap title-year-wrap">
-          <div className="reveal-inner serif title-year delay-1">{yearTitle}</div>
+          <div className={`reveal-inner serif title-year ${yearTitleVariantClass} delay-1`}>{yearTitle}</div>
         </div>
         <div className="reveal-wrap desc-text p0-desc">
           <div className="reveal-inner serif delay-2 p0-desc-inner">那些被岁月悄悄掩埋的对话<br/>原来都在这里，等待一个春天。</div>

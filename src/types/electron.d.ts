@@ -883,6 +883,12 @@ export interface ElectronAPI {
       dir?: string
       error?: string
     }>
+    captureCurrentWindow: () => Promise<{
+      success: boolean
+      dataUrl?: string
+      size?: { width: number; height: number }
+      error?: string
+    }>
     onAvailableYearsProgress: (callback: (payload: {
       taskId: string
       years?: number[]
